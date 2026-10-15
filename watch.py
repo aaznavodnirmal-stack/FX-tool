@@ -22,7 +22,7 @@ COOLDOWN_HOURS = 24                 # don't repeat the same signal more often th
 SUMMARY_HOUR_SGT = 8                # daily summary email around 8am Singapore time (None = off)
 # =============================================================================
 
-import argparse, csv, json, math, os, random, smtplib, sys, time, urllib.request
+import argparse, csv, json, math, os, random, smtplib, sys, time, urllib.error, urllib.request
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -247,34 +247,66 @@ def send(subject, html, attach=None):
     msg.add_alternative(body, subtype="html")
     if attach:
         msg.add_attachment(Path(attach).read_bytes(), maintype="text", subtype="html", filename="fx_dashboard.html")
-    if DRY or not (user and pw):
+    if DRY:
         OUT.mkdir(exist_ok=True)
         p = OUT / f"email_{int(time.time() * 1000)}.html"
         p.write_text(f"<h3>{msg['Subject']}</h3>{body}", encoding="utf-8")
-        print(f"  email not sent ({'dry run' if DRY else 'EMAIL_USER/EMAIL_PASS not set'}): {p.name}")
-        return DRY
+        print(f"  dry run, email saved: {p.name}")
+        return True
+    if user and pw and smtp_send(msg, user, pw, subject):
+        return True
+    if github_issue(msg["Subject"], body):
+        return True
+    OUT.mkdir(exist_ok=True)
+    p = OUT / f"email_{int(time.time() * 1000)}.html"
+    p.write_text(f"<h3>{msg['Subject']}</h3>{body}", encoding="utf-8")
+    print(f"  NOT DELIVERED (saved as {p.name}): set EMAIL_USER/EMAIL_PASS, or run inside GitHub Actions for GitHub notifications.")
+    return False
+
+
+def smtp_send(msg, user, pw, subject):
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     tries = [("ssl", int(os.environ["SMTP_PORT"]))] if os.environ.get("SMTP_PORT") else [("ssl", 465), ("starttls", 587)]
     for mode, port in tries:
         try:
             if mode == "ssl":
-                s = smtplib.SMTP_SSL(host, port, timeout=30)
+                c = smtplib.SMTP_SSL(host, port, timeout=30)
             else:
-                s = smtplib.SMTP(host, port, timeout=30)
-                s.starttls()
-            with s:
-                s.login(user, pw)
-                s.send_message(msg)
+                c = smtplib.SMTP(host, port, timeout=30)
+                c.starttls()
+            with c:
+                c.login(user, pw)
+                c.send_message(msg)
             print(f"  emailed: {subject}")
             return True
         except smtplib.SMTPAuthenticationError as e:
-            print(f"  EMAIL FAILED ({mode} {port}): {host} rejected the login: {e.smtp_code} {e.smtp_error[:120]!r}.\n"
-                  "  -> EMAIL_PASS must be a 16-character Google App Password (not your normal password), "
-                  "and EMAIL_USER the same Gmail address it was created for.")
+            print(f"  EMAIL FAILED ({mode} {port}): {host} rejected the login ({e.smtp_code}). EMAIL_PASS must be a 16-character "
+                  "Google App Password, and EMAIL_USER the Gmail address it was created for.")
             return False
         except Exception as e:
             print(f"  EMAIL FAILED ({mode} {port}): {type(e).__name__}: {e}")
-    print("  -> Could not log in to the mail server. Check the three secrets, or the mail provider may be blocking GitHub's servers.")
+    print("  -> mail server refused the connection (Google often blocks logins from GitHub's servers).")
+    return False
+
+
+def github_issue(title, body):
+    """Fallback: open a GitHub issue assigned to (and mentioning) the repo owner. GitHub then emails the owner."""
+    tok, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
+    if not (tok and repo):
+        return False
+    owner = repo.split("/")[0]
+    data = json.dumps({"title": title, "body": body + f"<p>@{owner}</p>", "assignees": [owner], "labels": ["fx-watch"]}).encode()
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/issues", data=data, method="POST", headers={
+        "Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json", "User-Agent": "fx-watch"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            print(f"  notified via GitHub issue #{json.loads(r.read())['number']}: {title}")
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"  GITHUB NOTIFY FAILED: HTTP {e.code} {e.read()[:200]!r} (workflow needs 'issues: write' permission)")
+    except Exception as e:
+        print(f"  GITHUB NOTIFY FAILED: {e}")
     return False
 
 
