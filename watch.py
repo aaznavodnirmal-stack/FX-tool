@@ -232,7 +232,10 @@ def table(an):
 
 
 def send(subject, html, attach=None):
-    user, pw, to = os.environ.get("EMAIL_USER"), os.environ.get("EMAIL_PASS"), os.environ.get("EMAIL_TO") or os.environ.get("EMAIL_USER")
+    """Returns True if emailed (or saved in dry-run), False if it failed. Never raises."""
+    clean = lambda v: "".join((v or "").split())   # drops spaces/newlines/non-breaking spaces from pasted secrets
+    user, pw = clean(os.environ.get("EMAIL_USER")), clean(os.environ.get("EMAIL_PASS"))
+    to = clean(os.environ.get("EMAIL_TO")) or user
     url = os.environ.get("DASHBOARD_URL") or (f"https://{os.environ['GITHUB_REPOSITORY'].split('/')[0]}.github.io/"
                                                f"{os.environ['GITHUB_REPOSITORY'].split('/')[1]}/" if os.environ.get("GITHUB_REPOSITORY") else "")
     body = (f"<div style='font:14px Arial;max-width:680px'>{html}"
@@ -249,11 +252,30 @@ def send(subject, html, attach=None):
         p = OUT / f"email_{int(time.time() * 1000)}.html"
         p.write_text(f"<h3>{msg['Subject']}</h3>{body}", encoding="utf-8")
         print(f"  email not sent ({'dry run' if DRY else 'EMAIL_USER/EMAIL_PASS not set'}): {p.name}")
-        return
-    with smtplib.SMTP_SSL(os.environ.get("SMTP_HOST", "smtp.gmail.com"), int(os.environ.get("SMTP_PORT", 465))) as s:
-        s.login(user, pw)
-        s.send_message(msg)
-    print(f"  emailed: {subject}")
+        return DRY
+    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    tries = [("ssl", int(os.environ["SMTP_PORT"]))] if os.environ.get("SMTP_PORT") else [("ssl", 465), ("starttls", 587)]
+    for mode, port in tries:
+        try:
+            if mode == "ssl":
+                s = smtplib.SMTP_SSL(host, port, timeout=30)
+            else:
+                s = smtplib.SMTP(host, port, timeout=30)
+                s.starttls()
+            with s:
+                s.login(user, pw)
+                s.send_message(msg)
+            print(f"  emailed: {subject}")
+            return True
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"  EMAIL FAILED ({mode} {port}): {host} rejected the login: {e.smtp_code} {e.smtp_error[:120]!r}.\n"
+                  "  -> EMAIL_PASS must be a 16-character Google App Password (not your normal password), "
+                  "and EMAIL_USER the same Gmail address it was created for.")
+            return False
+        except Exception as e:
+            print(f"  EMAIL FAILED ({mode} {port}): {type(e).__name__}: {e}")
+    print("  -> Could not log in to the mail server. Check the three secrets, or the mail provider may be blocking GitHub's servers.")
+    return False
 
 
 # ------------------------------------------------------------------ outputs
@@ -318,22 +340,23 @@ def run():
     new = [s for s in sigs if not state["active"].get(s[0]) or nowts - state["sent"].get(s[0], 0) >= COOLDOWN_HOURS * 3600]
     if new:
         ccys = {k.split(":")[1] for k, _, _ in new}
-        send(" | ".join(t for _, t, _ in new), "".join(f"<h2 style='font:600 18px Arial'>{t}</h2><p>{x}</p>" for _, t, x in new)
-             + table({c: an[c] for c in an if c in ccys}))
-        with open(DATA / "signals.csv", "a", newline="") as fh:
-            for k, t, _ in new:
-                state["sent"][k] = nowts
-                csv.writer(fh).writerow([now.isoformat(timespec="minutes"), k, t])
-    state["active"] = {k: True for k, _, _ in sigs}
+        ok = send(" | ".join(t for _, t, _ in new), "".join(f"<h2 style='font:600 18px Arial'>{t}</h2><p>{x}</p>" for _, t, x in new)
+                  + table({c: an[c] for c in an if c in ccys}))
+        if ok:
+            with open(DATA / "signals.csv", "a", newline="") as fh:
+                for k, t, _ in new:
+                    state["sent"][k] = nowts
+                    csv.writer(fh).writerow([now.isoformat(timespec="minutes"), k, t])
+    state["active"] = {k: True for k, _, _ in sigs if k in state["sent"] or k not in {n[0] for n in new}}
     if srcs != {"wise"} and not DEMO and state.get("warned_src") != str(now.date()):
-        send("Wise unreachable, using ECB fallback", "<p>Wise didn't answer, so these rates are ECB reference rates (close to Wise, "
-             "not identical). If this repeats, run watch.py on your own PC instead.</p>")
-        state["warned_src"] = str(now.date())
+        if send("Wise unreachable, using ECB fallback", "<p>Wise didn't answer, so these rates are ECB reference rates (close to Wise, "
+                "not identical). If this repeats, run watch.py on your own PC instead.</p>"):
+            state["warned_src"] = str(now.date())
     if SUMMARY_HOUR_SGT is not None and now.hour >= SUMMARY_HOUR_SGT and state.get("summary") != str(now.date()):
         lines = "".join(f"<li>{t}: {x}</li>" for _, t, x in sigs) or "<li>No buy or sell signals today.</li>"
-        send(f"daily summary {now:%d %b}", f"<h2 style='font:600 18px Arial'>Rates at {now:%H:%M} SGT</h2><ul>{lines}</ul>{table(an)}"
-             f"<p style='color:#555'>Beats = share of the last {LOOKBACK_DAYS} days with a worse rate. Likely in 7d = 68% range.</p>", dash)
-        state["summary"] = str(now.date())
+        if send(f"daily summary {now:%d %b}", f"<h2 style='font:600 18px Arial'>Rates at {now:%H:%M} SGT</h2><ul>{lines}</ul>{table(an)}"
+                f"<p style='color:#555'>Beats = share of the last {LOOKBACK_DAYS} days with a worse rate. Likely in 7d = 68% range.</p>", dash):
+            state["summary"] = str(now.date())
     state["fails"] = 0
     (DATA / "state.json").write_text(json.dumps(state, indent=1))
     (DATA / "latest.json").write_text(json.dumps({c: {k: v for k, v in a.items()} for c, a in an.items()}, indent=1))
@@ -346,8 +369,12 @@ def main():
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--loop", action="store_true", help="repeat every hour")
+    ap.add_argument("--test-email", action="store_true", help="send one test email and stop")
     a = ap.parse_args()
     DEMO, DRY = a.demo, a.dry_run
+    if a.test_email:
+        ok = send("test email", "<h2 style='font:600 18px Arial'>It works</h2><p>Your FX Watch email settings are correct.</p>")
+        sys.exit(0 if ok else 1)
     while True:
         print(f"Check at {datetime.now(SGT):%Y-%m-%d %H:%M} SGT")
         try:
