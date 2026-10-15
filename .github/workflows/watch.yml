@@ -24,71 +24,90 @@ concurrency:
 
 jobs:
   watch:
-    # on issue events, only act on wallet requests opened by the repo owner (never by strangers or alert issues)
+    # on issue events, only act on wallet requests opened by the repo owner (never strangers, never alert issues)
     if: ${{ github.event_name != 'issues' || (github.event.issue.user.login == github.repository_owner && startsWith(github.event.issue.title, 'FX wallet')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      EMAIL_USER: ${{ secrets.EMAIL_USER }}
+      EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Apply wallet request from the dashboard
         if: ${{ github.event_name == 'issues' }}
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: python watch.py --wallet-issue
+
       - name: Send test email
         if: ${{ inputs.test_email }}
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python watch.py --test-email
+
       - name: Check rates, send signals, build dashboard
         if: ${{ !inputs.test_email }}
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python watch.py
+
+      # publish first, so nothing later can stop the dashboard from updating
+      - uses: actions/configure-pages@v5
+        if: ${{ !cancelled() && !inputs.test_email }}
+      - uses: actions/upload-pages-artifact@v3
+        if: ${{ !cancelled() && !inputs.test_email }}
+        with:
+          path: site
+      - id: deploy
+        if: ${{ !cancelled() && !inputs.test_email }}
+        uses: actions/deploy-pages@v4
+
+      - name: Check the Pages setting
+        if: ${{ !cancelled() && !inputs.test_email }}
+        run: |
+          bt=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type 2>/dev/null || echo unknown)
+          echo "Pages build type: $bt"
+          if [ "$bt" = "legacy" ]; then
+            msg="GitHub Pages is set to 'Deploy from a branch', so the site shows your README instead of the dashboard. Fix: Settings > Pages > Build and deployment > Source > GitHub Actions, then run this workflow again."
+            echo "::error::$msg"
+            echo "### WARNING: $msg" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Dashboard: ${{ steps.deploy.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # save rate history, signal memory and wallet on top of the latest repo (never conflicts)
       - name: Save rate history and signal state
         if: always()
         continue-on-error: true
         run: |
+          mkdir -p /tmp/keep && cp -r data /tmp/keep/ 2>/dev/null || exit 0
+          [ -f wallet.json ] && cp wallet.json /tmp/keep/
           git config user.name "fx-watch"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
-          [ -f wallet.json ] && git add wallet.json
-          git rm -r -q --cached docs 2>/dev/null || true   # the dashboard is published directly, not stored in the repo
-          git commit -m "rates $(date -u +%Y-%m-%dT%H:%MZ)" || exit 0
-          for i in 1 2 3 4; do
-            git push -q origin HEAD:main && exit 0
-            git pull --rebase --autostash -X theirs origin main || true
-            sleep $((i * 5))
+          for i in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            rm -rf data && cp -r /tmp/keep/data data
+            [ -f /tmp/keep/wallet.json ] && cp /tmp/keep/wallet.json wallet.json
+            git rm -r -q --cached --ignore-unmatch docs > /dev/null
+            git add -A data
+            [ -f wallet.json ] && git add wallet.json
+            git diff --cached --quiet && exit 0
+            git commit -q -m "rates $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push -q origin HEAD:main && echo "saved" && exit 0
+            sleep $((i * 3))
           done
           exit 1
-      - uses: actions/configure-pages@v5
-        if: ${{ !cancelled() }}
-      - uses: actions/upload-pages-artifact@v3
-        if: ${{ !cancelled() }}
-        with:
-          path: docs
-      - id: deploy
-        if: ${{ !cancelled() }}
-        uses: actions/deploy-pages@v4
-      - name: Show dashboard address
-        if: ${{ !cancelled() }}
-        run: echo "Dashboard - ${{ steps.deploy.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Reply to wallet request
         if: ${{ github.event_name == 'issues' && !cancelled() }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           NUM: ${{ github.event.issue.number }}
         run: |
