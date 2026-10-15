@@ -5,8 +5,7 @@
   "TARGET:AUD": 1792055822.076691
  },
  "active": {
-  "BUY:EUR": true,
-  "TARGET:AUD": true
+  "BUY:EUR": true
  },
  "fails": 0,
  "summary": "2026-10-15"
