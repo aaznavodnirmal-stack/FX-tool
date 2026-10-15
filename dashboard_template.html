@@ -182,6 +182,38 @@ footer{font-size:.82rem;color:var(--muted);display:flex;flex-direction:column;ga
     <p class="small muted" id="btNote"></p>
   </section>
 
+  <section id="holdSec" aria-labelledby="holdH" hidden>
+    <div class="sechead"><h2 id="holdH">My holdings</h2><span class="small muted">What you really hold in Wise. You get an email when selling back would pay.</span></div>
+    <div class="tscroll"><table id="holdTbl">
+      <thead><tr><th>Currency</th><th class="r">You hold</th><th class="r">You paid</th><th class="r">Worth now</th><th class="r">Profit / loss</th><th class="r" id="sellHead">Sell when 1 SGD buys up to</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div class="cols2">
+      <div class="panel">
+        <h3>I bought a currency in Wise</h3>
+        <div class="formrow mt">
+          <label class="field">Currency<select id="hCcy"></select></label>
+          <label class="field">Amount you received<input id="hAmt" type="number" min="0" step="any" placeholder="e.g. 24.31"></label>
+          <label class="field">SGD you paid<input id="hSgd" type="number" min="0" step="any" placeholder="e.g. 20"></label>
+          <label class="field">Date<input id="hDate" type="date"></label>
+        </div>
+        <div class="formrow mt"><button id="hAdd" class="primary" type="button">Add to my holdings</button></div>
+        <p class="small muted mt">Both amounts are on the Wise transaction. A GitHub page opens with the details filled in. Click <b>Submit new issue</b> there, and this page updates within a few minutes.</p>
+        <p class="small mt" id="hMsg" aria-live="polite"></p>
+      </div>
+      <div class="panel">
+        <h3>Rate alerts</h3>
+        <div class="formrow mt">
+          <label class="field">Currency<select id="tCcy"></select></label>
+          <label class="field">Email me when 1 SGD buys at least<input id="tRate" type="number" min="0" step="any" placeholder="e.g. 1.15"></label>
+          <button id="tAdd" type="button">Add alert</button>
+        </div>
+        <div class="bals mt" id="tList"></div>
+        <p class="small muted mt">Changes go through the same GitHub page and take a few minutes. Wise holdings and alerts are visible to anyone who opens this public page.</p>
+      </div>
+    </div>
+  </section>
+
   <section id="walletSec" aria-labelledby="walletH">
     <div class="sechead"><h2 id="walletH">Practice wallet</h2><span class="small muted">Paper trades at current rates and fees. No real money moves.</span></div>
     <div class="wallet">
@@ -431,7 +463,7 @@ function renderBoard(){
   $('#chanceHead').textContent='+'+S.target+'% within '+S.horizon+'d';
   var rows=codes().map(function(c){
     var a=analyze(c);var name=NAMES[c]||'';
-    var ccy='<div class="ccy"><b>'+esc(c)+(S.cur[c].hold?'':'<span class="tag">send only</span>')+'</b><span>'+esc(name)+'</span></div>';
+    var ccy='<div class="ccy"><b>'+esc(c)+(S.cur[c].hold?'':'<span class="tag">send only</span>')+(heldIn(c)?'<span class="tag" style="background:var(--accent-soft);color:var(--accent)">held</span>':'')+'</b><span>'+esc(name)+'</span></div>';
     if(!a)return '<tr data-c="'+esc(c)+'" tabindex="0"><td>'+ccy+'</td><td colspan="7" class="muted">'+esc((data[c]&&data[c].err)||'No rate data yet')+'</td></tr>';
     var pos=Math.max(0,Math.min(1,(a.cur-a.lo)/((a.hi-a.lo)||1)));
     return '<tr data-c="'+esc(c)+'" tabindex="0" class="'+(c===S.selected?'sel':'')+'">'+
@@ -606,8 +638,51 @@ function renderCfg(){
 }
 function updatePasteLink(){var c=$('#pasteCcy').value||'USD';$('#pasteLink').href='https://wise.com/rates/history+live?source='+BASE+'&target='+c+'&length=1&resolution=daily&unit=year';$('#pasteLink').textContent='Open Wise rate history for SGD → '+c}
 
-function renderAll(){renderStatus();renderBoard();renderDetail();renderBacktest();renderWallet();renderCfg()}
-function renderAnalysis(){renderStatus();renderBoard();renderDetail();renderBacktest();renderWallet()}
+
+/* ---------- my holdings (online watcher only) ---------- */
+var SNAP=window.FX_SNAPSHOT||null,REPO=SNAP&&SNAP.repo||'',HOLD=(SNAP&&SNAP.holdings)||[],TARGS=(SNAP&&SNAP.targets)||{},TP=(SNAP&&SNAP.takeProfit)||0.5,MAXHOLD=(SNAP&&SNAP.maxHold)||60;
+function openIssue(title,f){
+  var body=Object.keys(f).map(function(k){return k+': '+f[k]}).join('\n');
+  var a=document.createElement('a');a.href='https://github.com/'+REPO+'/issues/new?title='+encodeURIComponent(title)+'&body='+encodeURIComponent(body);
+  a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();a.remove();
+}
+function heldIn(c){return HOLD.some(function(h){return h.ccy===c})}
+function renderHoldings(){
+  var sec=$('#holdSec');if(!REPO){sec.hidden=true;return}sec.hidden=false;
+  $('#sellHead').textContent='Sell when 1 SGD buys up to (+'+TP+'%)';
+  var tp=0,tw=0,rows=HOLD.map(function(h){
+    var c=h.ccy,r=rate(c),ok=S.cur[c]&&isFinite(r),name='<div class="ccy"><b>'+esc(c)+'</b><span>'+esc(h.note||(h.date?'bought '+h.date:''))+'</span></div>';
+    var btn='<button type="button" data-sold="'+esc(h.id||'')+'" data-c="'+esc(c)+'">I sold this</button>';
+    if(!ok)return '<tr><td>'+name+'</td><td class="r num">'+money(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td colspan="4" class="muted">Not tracked: add '+esc(c)+' under Data and fees</td><td>'+btn+'</td></tr>';
+    var fb=feeBack(c),back=h.amount*(1-fb)/r,pnl=back/h.sgd-1,need=h.amount*(1-fb)/(h.sgd*(1+TP/100));
+    var days=h.date?Math.floor((Date.now()-Date.parse(h.date))/86400000):0;tp+=h.sgd;tw+=back;
+    var st=pnl*100>=TP?['good','Take profit']:days>=MAXHOLD?['bad','Held '+days+' days']:['mid','Hold'];
+    return '<tr><td>'+name+'</td><td class="r num">'+money(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td class="r num">'+money(back,'SGD')+'</td>'+
+      '<td class="r num '+(pnl>0?'pos':pnl<0?'neg':'')+'">'+pct(pnl)+'</td><td class="r num">'+fr(need)+' '+esc(c)+' <span class="small muted">(now '+fr(r)+')</span></td>'+
+      '<td><span class="pill '+st[0]+'">'+st[1]+'</span></td><td>'+btn+'</td></tr>';
+  });
+  if(!rows.length)rows=['<tr><td colspan="8" class="muted">No holdings yet. After you buy a currency in Wise, add it below so the watcher can tell you when to sell.</td></tr>'];
+  else if(HOLD.length>1&&tp)rows.push('<tr><td><b>Total</b></td><td></td><td class="r num">'+money(tp,'SGD')+'</td><td class="r num">'+money(tw,'SGD')+'</td><td class="r num '+(tw>tp?'pos':'neg')+'">'+pct(tw/tp-1)+'</td><td colspan="3"></td></tr>');
+  $('#holdTbl tbody').innerHTML=rows.join('');
+  var hs=$('#hCcy'),keep=hs.value||'AUD',list=codes().filter(function(c){return S.cur[c].hold});
+  hs.innerHTML=list.map(function(c){return '<option>'+esc(c)+'</option>'}).join('');if(list.indexOf(keep)>=0)hs.value=keep;
+  var ts=$('#tCcy'),tk=ts.value;ts.innerHTML=codes().map(function(c){return '<option>'+esc(c)+'</option>'}).join('');if(tk&&S.cur[tk])ts.value=tk;
+  var tl=Object.keys(TARGS).map(function(c){return '<span class="bal">'+esc(c)+' \u2265 '+fr(TARGS[c])+' <button type="button" data-untarget="'+esc(c)+'" aria-label="Remove alert for '+esc(c)+'">\u00d7</button></span>'});
+  $('#tList').innerHTML=tl.join('')||'<span class="small muted">No alerts yet.</span>';
+}
+if($('#hDate'))$('#hDate').value=new Date(Date.now()+8*3600000).toISOString().slice(0,10);
+$('#hAdd').addEventListener('click',function(){
+  var c=$('#hCcy').value,amt=+$('#hAmt').value,sgd=+$('#hSgd').value,d=$('#hDate').value,m=$('#hMsg');
+  if(!c||!(amt>0)||!(sgd>0)||!d){m.textContent='Enter the amount you received and the SGD you paid.';return}
+  openIssue('FX wallet: add '+c,{action:'add',ccy:c,amount:amt,sgd:sgd,date:d});
+  m.textContent='GitHub opened in a new tab. Click "Submit new issue" there to save it. Nothing is saved until you do.';
+});
+$('#tAdd').addEventListener('click',function(){var c=$('#tCcy').value,r=+$('#tRate').value;if(!c||!(r>0))return;openIssue('FX wallet: alert '+c,{action:'target',ccy:c,rate:r})});
+$('#holdTbl').addEventListener('click',function(e){var b=e.target.closest('button[data-sold]');if(!b)return;openIssue('FX wallet: sold '+b.dataset.c,b.dataset.sold?{action:'remove',id:b.dataset.sold}:{action:'remove',ccy:b.dataset.c})});
+$('#tList').addEventListener('click',function(e){var b=e.target.closest('button[data-untarget]');if(!b)return;openIssue('FX wallet: remove alert '+b.dataset.untarget,{action:'target',ccy:b.dataset.untarget,rate:''})});
+
+function renderAll(){renderStatus();renderBoard();renderDetail();renderBacktest();renderHoldings();renderWallet();renderCfg()}
+function renderAnalysis(){renderStatus();renderBoard();renderDetail();renderBacktest();renderHoldings();renderWallet()}
 
 /* ---------- local app (live Wise) ---------- */
 function api(path){return fetch(path,{cache:'no-store'}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j})})}
