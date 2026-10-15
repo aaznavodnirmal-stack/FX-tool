@@ -2,13 +2,19 @@ name: FX Watch
 
 on:
   schedule:
-    - cron: "17 * * * *"
-  workflow_dispatch:
+    - cron: "17 * * * *"   # every hour at :17 (GitHub may run it a few minutes late)
+  workflow_dispatch:        # "Run workflow" button for a manual check
+    inputs:
+      test_email:
+        description: "Only send a test email (to check the email secrets)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   pages: write
   id-token: write
+  issues: write
 
 concurrency:
   group: fx-watch
@@ -26,23 +32,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Check rates, send signals, build dashboard
+      - name: Send test email
+        if: ${{ inputs.test_email }}
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python watch.py --test-email
+      - name: Check rates, send signals, build dashboard
+        if: ${{ !inputs.test_email }}
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python watch.py
       - name: Save rate history and signal state
         if: always()
+        continue-on-error: true
         run: |
           git config user.name "fx-watch"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data docs
           git commit -m "rates $(date -u +%Y-%m-%dT%H:%MZ)" || exit 0
-          git push
+          for i in 1 2 3 4; do
+            git pull --rebase -X theirs origin main && git push && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
       - uses: actions/configure-pages@v5
+        if: ${{ !cancelled() }}
       - uses: actions/upload-pages-artifact@v3
+        if: ${{ !cancelled() }}
         with:
           path: docs
       - id: deploy
+        if: ${{ !cancelled() }}
         uses: actions/deploy-pages@v4
