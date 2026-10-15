@@ -3,6 +3,8 @@ name: FX Watch
 on:
   schedule:
     - cron: "17 * * * *"   # every hour at :17 (GitHub may run it a few minutes late)
+  issues:                   # the dashboard's "add holding" forms open a GitHub issue; this applies it
+    types: [opened]
   workflow_dispatch:        # "Run workflow" button for a manual check
     inputs:
       test_email:
@@ -22,6 +24,8 @@ concurrency:
 
 jobs:
   watch:
+    # on issue events, only act on wallet requests opened by the repo owner (never by strangers or alert issues)
+    if: ${{ github.event_name != 'issues' || (github.event.issue.user.login == github.repository_owner && startsWith(github.event.issue.title, 'FX wallet')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -32,6 +36,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Apply wallet request from the dashboard
+        if: ${{ github.event_name == 'issues' }}
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: python watch.py --wallet-issue
       - name: Send test email
         if: ${{ inputs.test_email }}
         env:
@@ -54,7 +63,7 @@ jobs:
         run: |
           git config user.name "fx-watch"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data docs
+          git add data wallet.json 2>/dev/null || git add data
           git commit -m "rates $(date -u +%Y-%m-%dT%H:%MZ)" || exit 0
           for i in 1 2 3 4; do
             git pull --rebase -X theirs origin main && git push && exit 0
@@ -70,3 +79,15 @@ jobs:
       - id: deploy
         if: ${{ !cancelled() }}
         uses: actions/deploy-pages@v4
+      - name: Show dashboard address
+        if: ${{ !cancelled() }}
+        run: echo "Dashboard - ${{ steps.deploy.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Reply to wallet request
+        if: ${{ github.event_name == 'issues' && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUM: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$NUM" --body-file out/wallet_result.md || true
+          gh issue close "$NUM" || true
