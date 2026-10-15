@@ -28,7 +28,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-DATA, DOCS, OUT = ROOT / "data", ROOT / "docs", ROOT / "out"
+DATA, DOCS, OUT = ROOT / "data", ROOT / "site", ROOT / "out"
 BASE, DAY_MS, SGT = "SGD", 86400000, timezone(timedelta(hours=8))
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 DEMO = DRY = False
