@@ -4,8 +4,7 @@
   "BUY:AUD": 1792047092.692882
  },
  "active": {
-  "BUY:EUR": true,
-  "BUY:AUD": true
+  "BUY:EUR": true
  },
  "fails": 0,
  "summary": "2026-10-15"
