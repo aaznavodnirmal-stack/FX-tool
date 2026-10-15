@@ -15,14 +15,14 @@ BUY_RANK = 0.85                     # buy signal when today's rate beats 85% of 
 TAKE_PROFIT_PCT = 0.5               # sell signal when converting back gains this much after both fees
 STOP_LOSS_PCT = None                # e.g. 2.0 -> warning when a holding is down 2% after fees
 MAX_HOLD_DAYS = 60                  # reminder to review a holding after this many days
-TARGETS = {}                        # rate alerts (units per 1 SGD), e.g. {"LKR": 236.0, "USD": 0.78}
-HOLDINGS = []                       # what you hold, e.g. [{"ccy": "USD", "amount": 15.44, "sgd": 20, "date": "2026-10-14"}]
+TARGETS = {}                        # rate alerts (units per 1 SGD); also managed from the dashboard
+HOLDINGS = []                       # normally managed from the dashboard (saved in wallet.json); used only if wallet.json is missing
 FEE_PCT = {"USD": .45, "EUR": .45, "GBP": .45, "AUD": .45, "JPY": .5, "MYR": .6, "INR": .7, "LKR": 1.0}
 COOLDOWN_HOURS = 24                 # don't repeat the same signal more often than this
 SUMMARY_HOUR_SGT = 8                # daily summary email around 8am Singapore time (None = off)
 # =============================================================================
 
-import argparse, csv, json, math, os, random, smtplib, sys, time, urllib.error, urllib.request
+import argparse, csv, json, math, os, random, re, smtplib, sys, time, urllib.error, urllib.request
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -186,6 +186,83 @@ def fmt(v):
     return f"{v:,.{4 if v < 10 else 3 if v < 100 else 2}f}"
 
 
+# ------------------------------------------------------------------ wallet (holdings + alerts, edited from the dashboard)
+WALLET = ROOT / "wallet.json"
+
+
+def load_wallet():
+    global HOLDINGS, TARGETS
+    w = jload(WALLET, None)
+    if isinstance(w, dict):
+        HOLDINGS, TARGETS = list(w.get("holdings", [])), dict(w.get("targets", {}))
+
+
+def b36(n):
+    d = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while n:
+        n, r = divmod(n, 36)
+        out = d[r] + out
+    return out or "0"
+
+
+def wallet_request():
+    """Apply a dashboard request (a GitHub issue opened by the repo owner) to wallet.json."""
+    f = {}
+    for line in os.environ.get("ISSUE_BODY", "").splitlines():
+        if ":" in line:
+            k, v = line.strip().strip("`").split(":", 1)
+            f[k.strip().lower()] = v.strip().strip("`")
+    w = jload(WALLET, {})
+    w.setdefault("holdings", [])
+    w.setdefault("targets", {})
+    act, ccy = f.get("action", "").lower(), f.get("ccy", "").upper()
+    try:
+        if act == "add":
+            try:
+                amount, sgd = float(f["amount"]), float(f["sgd"])
+                d = f.get("date") or datetime.now(SGT).date().isoformat()
+                date.fromisoformat(d)
+            except (KeyError, ValueError):
+                raise ValueError("amount, SGD paid and date must be filled in correctly")
+            if not (re.fullmatch("[A-Z]{3}", ccy) and amount > 0 and sgd > 0):
+                raise ValueError("currency, amount and SGD paid must be valid")
+            n = int(time.time())
+            while any(x.get("id") == b36(n) for x in w["holdings"]):
+                n += 1
+            h = {"id": b36(n), "ccy": ccy, "amount": round(amount, 4), "sgd": round(sgd, 2), "date": d}
+            if f.get("note"):
+                h["note"] = f["note"][:60]
+            w["holdings"].append(h)
+            msg = f"Added {amount:g} {ccy} (paid S${sgd:g}, {d})."
+        elif act == "remove":
+            keep = [h for h in w["holdings"] if not (h.get("id") == f["id"] if f.get("id") else h.get("ccy") == ccy)]
+            if len(keep) == len(w["holdings"]):
+                raise ValueError("no matching holding (already removed?)")
+            msg = f"Removed {len(w['holdings']) - len(keep)} holding(s). Nice trade."
+            w["holdings"] = keep
+        elif act == "target":
+            if not re.fullmatch("[A-Z]{3}", ccy):
+                raise ValueError("currency must be a 3-letter code")
+            if f.get("rate"):
+                if float(f["rate"]) <= 0:
+                    raise ValueError("rate must be positive")
+                w["targets"][ccy] = float(f["rate"])
+                msg = f"Alert set: email when 1 SGD buys at least {float(f['rate']):g} {ccy}."
+            else:
+                w["targets"].pop(ccy, None)
+                msg = f"Alert for {ccy} removed."
+        else:
+            raise ValueError("unknown action")
+        WALLET.write_text(json.dumps(w, indent=1), encoding="utf-8")
+        ok = True
+    except (KeyError, ValueError) as e:
+        msg, ok = f"Could not apply this request: {e}. Please try again from the dashboard.", False
+    OUT.mkdir(exist_ok=True)
+    (OUT / "wallet_result.md").write_text(("Done. " if ok else "") + msg + (" The dashboard will update in a minute or two." if ok else ""), encoding="utf-8")
+    print(("OK: " if ok else "FAILED: ") + msg)
+
+
 # ------------------------------------------------------------------ signals
 def signals(an):
     out, now = [], datetime.now(SGT)
@@ -202,7 +279,7 @@ def signals(an):
         if c in TARGETS and a["cur"] >= TARGETS[c]:
             out.append((f"TARGET:{c}", f"{c} hit your target {fmt(TARGETS[c])}", why))
     for i, h in enumerate(HOLDINGS):
-        a = an.get(h["ccy"])
+        a, hid = an.get(h["ccy"]), h.get("id", i)
         if not a:
             continue
         cost = h.get("sgd") or h["amount"] / (h.get("rate") or a["cur"]) / (1 - a["f"] / 100)
@@ -211,11 +288,11 @@ def signals(an):
         days = (now.date() - date.fromisoformat(h["date"])).days if h.get("date") else 0
         txt = f"{h['amount']:,.2f} {h['ccy']} converts back to S${back:,.2f} now (paid S${cost:,.2f}, {pnl:+.2%} after fees)."
         if pnl * 100 >= TAKE_PROFIT_PCT:
-            out.append((f"SELL:{h['ccy']}:{i}", f"Sell {h['ccy']} back to SGD: {pnl:+.2%}", txt))
+            out.append((f"SELL:{h['ccy']}:{hid}", f"Sell {h['ccy']} back to SGD: {pnl:+.2%}", txt))
         elif STOP_LOSS_PCT and pnl * 100 <= -STOP_LOSS_PCT:
-            out.append((f"STOP:{h['ccy']}:{i}", f"{h['ccy']} holding down {pnl:.2%}", txt))
+            out.append((f"STOP:{h['ccy']}:{hid}", f"{h['ccy']} holding down {pnl:.2%}", txt))
         elif MAX_HOLD_DAYS and days >= MAX_HOLD_DAYS:
-            out.append((f"OLD:{h['ccy']}:{i}", f"Review {h['ccy']} held {days} days", txt))
+            out.append((f"OLD:{h['ccy']}:{hid}", f"Review {h['ccy']} held {days} days", txt))
     return out
 
 
@@ -321,6 +398,8 @@ def jload(p, default):
 def dashboard(data, an, sigs, label):
     note = ("Signals now: " + "; ".join(s[1] for s in sigs) + ".") if sigs else "No buy or sell signals right now."
     snap = {"app": "wise-fx-watch", "base": BASE, "savedAt": int(time.time() * 1000), "demo": DEMO, "label": label,
+            "repo": os.environ.get("GITHUB_REPOSITORY", ""), "holdings": HOLDINGS, "targets": TARGETS,
+            "takeProfit": TAKE_PROFIT_PCT, "maxHold": MAX_HOLD_DAYS,
             "note": note + f" Checked {datetime.now(SGT):%d %b %H:%M} SGT; updates hourly.",
             "currencies": {c: {"hist": d["hist"], "live": {"t": d["live"][0], "v": d["live"][1]}, "hold": c not in SEND_ONLY,
                                "fee": an[c]["f"], "feeBack": an[c]["fb"] or None} for c, d in data.items()}}
@@ -336,6 +415,7 @@ def dashboard(data, an, sigs, label):
 
 def run():
     DATA.mkdir(exist_ok=True)
+    load_wallet()
     state = jload(DATA / "state.json", {"sent": {}, "active": {}, "fails": 0, "summary": ""})
     data, failed = {}, []
     for c in CURRENCIES:
@@ -402,8 +482,12 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--loop", action="store_true", help="repeat every hour")
     ap.add_argument("--test-email", action="store_true", help="send one test email and stop")
+    ap.add_argument("--wallet-issue", action="store_true", help="apply a wallet request from env ISSUE_BODY (used by GitHub Actions)")
     a = ap.parse_args()
     DEMO, DRY = a.demo, a.dry_run
+    if a.wallet_issue:
+        wallet_request()
+        return
     if a.test_email:
         ok = send("test email", "<h2 style='font:600 18px Arial'>It works</h2><p>Your FX Watch email settings are correct.</p>")
         sys.exit(0 if ok else 1)
