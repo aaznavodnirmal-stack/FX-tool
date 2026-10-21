@@ -2,10 +2,12 @@
  "sent": {
   "BUY:EUR": 1792504209.972142,
   "BUY:AUD": 1792047092.692882,
-  "TARGET:AUD": 1792055822.076691
+  "TARGET:AUD": 1792055822.076691,
+  "SELL:AUD:tmxyv8": 1792550438.7661037
  },
  "active": {
-  "BUY:EUR": true
+  "BUY:EUR": true,
+  "SELL:AUD:tmxyv8": true
  },
  "fails": 0,
  "summary": "2026-10-21"
