@@ -18,11 +18,13 @@ MAX_HOLD_DAYS = 60                  # reminder to review a holding after this ma
 TARGETS = {}                        # rate alerts (units per 1 SGD); also managed from the dashboard
 HOLDINGS = []                       # normally managed from the dashboard (saved in wallet.json); used only if wallet.json is missing
 FEE_PCT = {"USD": .45, "EUR": .45, "GBP": .45, "AUD": .45, "JPY": .5, "MYR": .6, "INR": .7, "LKR": 1.0}
+METALS = ["XAU", "XAG", "XPT"]      # gold, silver, platinum (XPD = palladium). [] switches metals off.
+METAL_SPREAD_PCT = 2.0              # what your metal dealer charges each way. Wise does NOT sell metals.
 COOLDOWN_HOURS = 24                 # don't repeat the same signal more often than this
 SUMMARY_HOUR_SGT = 8                # daily summary email around 8am Singapore time (None = off)
 # =============================================================================
 
-import argparse, csv, json, math, os, random, re, smtplib, sys, time, urllib.error, urllib.request
+import argparse, csv, json, math, os, random, re, smtplib, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -96,7 +98,81 @@ def ecb_history(c):  # fallback only: ECB reference rates, close to Wise but not
     return by_day([[to_ms(d), float(r[c])] for d, r in raw["rates"].items() if c in r])
 
 
-DEMO_LEVEL = {"USD": .776, "EUR": .668, "GBP": .579, "AUD": 1.18, "JPY": 115.2, "MYR": 3.29, "INR": 67.4, "LKR": 232.5}
+OZ_G = 31.1034768                   # grams in a troy ounce
+METAL_SYM = {"XAU": ("xauusd", "GC=F"), "XAG": ("xagusd", "SI=F"),
+             "XPT": ("xptusd", "PL=F"), "XPD": ("xpdusd", "PA=F")}
+METAL_NAME = {"XAU": "Gold", "XAG": "Silver", "XPT": "Platinum", "XPD": "Palladium"}
+
+
+def get_text(url, tries=2):
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/csv,text/plain,*/*"})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.read().decode("utf-8", "ignore")
+        except Exception as e:
+            err = e
+            time.sleep(2 * (i + 1))
+    raise RuntimeError(f"{url.split('?')[0]}: {err}")
+
+
+def stooq_usd(sym):                 # USD per troy ounce, daily
+    d2, d1 = date.today(), date.today() - timedelta(days=400)
+    txt = get_text(f"https://stooq.com/q/d/l/?s={sym}&i=d&d1={d1:%Y%m%d}&d2={d2:%Y%m%d}")
+    pts = []
+    for row in txt.splitlines()[1:]:
+        f = row.split(",")
+        if len(f) > 4:
+            try:
+                pts.append([to_ms(f[0]), float(f[4])])
+            except (ValueError, TypeError):
+                pass
+    if len(pts) < 30:
+        raise RuntimeError("stooq gave too little data")
+    return by_day(pts)
+
+
+def yahoo_usd(sym):                 # fallback: Yahoo futures close
+    j = get(f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=1y&interval=1d", 2)
+    r = j["chart"]["result"][0]
+    pts = [[int(t) * 1000, float(v)] for t, v in zip(r["timestamp"], r["indicators"]["quote"][0]["close"]) if v]
+    if len(pts) < 30:
+        raise RuntimeError("yahoo gave too little data")
+    return by_day(pts)
+
+
+def metal_history(m, usd):
+    """Grams of metal per 1 SGD, daily - so the same maths as a currency applies."""
+    oz, err = None, None
+    for fn, sym in ((stooq_usd, METAL_SYM[m][0]), (yahoo_usd, METAL_SYM[m][1])):
+        try:
+            oz = fn(sym)
+            break
+        except Exception as e:
+            err = e
+    if not oz:
+        raise RuntimeError(f"no metal price source worked ({err})")
+    umap = {t // DAY_MS: v for t, v in usd}
+    last, out = None, []
+    for t, usd_oz in oz:
+        last = umap.get(t // DAY_MS, last)
+        if last and usd_oz > 0:
+            out.append([t, last * OZ_G / usd_oz])
+    if len(out) < 60:
+        raise RuntimeError("not enough overlap with the SGD/USD history")
+    return out
+
+
+def load_metal(m, usd):
+    if DEMO:
+        h = demo_history(m)
+        return {"hist": h, "live": [int(time.time() * 1000), h[-1][1]], "src": "demo", "kind": "metal"}
+    h = metal_history(m, usd)
+    return {"hist": h, "live": h[-1], "src": "metal", "kind": "metal"}
+
+
+DEMO_LEVEL = {"USD": .776, "EUR": .668, "GBP": .579, "AUD": 1.18, "JPY": 115.2, "MYR": 3.29, "INR": 67.4, "LKR": 232.5,
+              "XAU": .00871, "XAG": .7184, "XPT": .01764}
 
 
 def demo_history(c):
@@ -174,16 +250,27 @@ def analyze(c, d, f, fb):
     model = "trend" if mom and mom >= 0.55 else "average" if mr and mr >= 0.55 else "random walk"
     fc7 = cur * math.exp(7 * s14) if model == "trend" else (cur + (mean(v[-20:]) - cur) * 0.5 if model == "average" else cur)
     sd7, sdn = sigma * math.sqrt(7), sigma * math.sqrt(14)
-    return {"ccy": c, "cur": cur, "rank": rank, "lo": min(win), "hi": max(win), "ma30": mean(v[-30:]), "sigma": sigma,
+    kind = d.get("kind", "currency")
+    return {"ccy": c, "kind": kind, "unit": "g" if kind == "metal" else c, "inv": 1 / cur if cur else None,
+            "name": METAL_NAME.get(c, c), "cur": cur, "rank": rank, "lo": min(win), "hi": max(win), "ma30": mean(v[-30:]), "sigma": sigma,
             "trend_wk": math.exp(7 * s14) - 1, "model": model, "mom_acc": mom, "mr_acc": mr, "fc7": fc7,
             "r7": [fc7 * math.exp(-sd7), fc7 * math.exp(sd7)], "p_up": p_touch(0.005, sigma, 14),
             "f": f, "fb": fb, "be": 1 / ((1 - f / 100) * (1 - fb / 100)) - 1 if fb else None,
-            "get": AMOUNT_SGD * (1 - f / 100) * cur, "send_only": c in SEND_ONLY, "src": d["src"],
+            "get": AMOUNT_SGD * (1 - f / 100) * cur, "send_only": c in SEND_ONLY and kind != "metal", "src": d["src"],
             "verdict": "good" if rank >= BUY_RANK else "weak" if rank <= 1 - BUY_RANK else "average"}
 
 
 def fmt(v):
     return f"{v:,.{4 if v < 10 else 3 if v < 100 else 2}f}"
+
+
+def both_ways(a):
+    """Rates in both directions - what 1 SGD buys, and what one unit sells back for."""
+    c = a["ccy"]
+    if a["kind"] == "metal":
+        return (f"1 g of {a['name'].lower()} costs S${a['inv']:,.2f} (1 oz S${a['inv'] * OZ_G:,.0f}); "
+                f"S${AMOUNT_SGD:g} buys {a['get']:,.3f} g")
+    return f"1 SGD = {fmt(a['cur'])} {c}, and 1 {c} = S${a['inv']:,.4f}"
 
 
 # ------------------------------------------------------------------ wallet (holdings + alerts, edited from the dashboard)
@@ -268,14 +355,24 @@ def signals(an):
     out, now = [], datetime.now(SGT)
     held = {h["ccy"] for h in HOLDINGS}
     for c, a in an.items():
-        why = (f"1 SGD = {fmt(a['cur'])} {c}, better than {a['rank']:.0%} of the last {LOOKBACK_DAYS} days "
+        cheap = "cheaper" if a["kind"] == "metal" else "better"
+        why = (f"{both_ways(a)} - {cheap} than {a['rank']:.0%} of the last {LOOKBACK_DAYS} days "
+               f"(range S${1 / a['hi']:,.2f}-S${1 / a['lo']:,.2f} per gram). Dealer spread {a['f']:.2f}% each way."
+               if a["kind"] == "metal" else
+               f"{both_ways(a)}, better than {a['rank']:.0%} of the last {LOOKBACK_DAYS} days "
                f"(range {fmt(a['lo'])}-{fmt(a['hi'])}). Fee {a['f']:.2f}%.")
         if a["verdict"] == "good" and c not in held:
-            if a["send_only"]:
+            if a["kind"] == "metal":
+                out.append((f"BUY:{c}", f"Good time to buy {a['name'].lower()}",
+                            why + f" Wise does not sell metals, so this is for whichever dealer you use."
+                                  f" Selling back only pays once the price rises about {a['be']:.1%}."))
+            elif a["send_only"]:
                 out.append((f"SEND:{c}", f"Good day to send SGD to {c}", why))
             else:
                 out.append((f"BUY:{c}", f"Buy {c} with SGD", why + f" To profit when converting back, the rate must drop {a['be']:.2%} "
                             f"({c} strengthening), after both fees. Next 7 days likely {fmt(a['r7'][0])}-{fmt(a['r7'][1])}."))
+        if a["kind"] == "metal" and a["verdict"] == "weak" and c in held:
+            out.append((f"DEAR:{c}", f"{a['name']} is dearer than {1 - a['rank']:.0%} of the last {LOOKBACK_DAYS} days", why))
         if c in TARGETS and a["cur"] >= TARGETS[c]:
             out.append((f"TARGET:{c}", f"{c} hit your target {fmt(TARGETS[c])}", why))
     for i, h in enumerate(HOLDINGS):
@@ -286,9 +383,11 @@ def signals(an):
         back = h["amount"] * (1 - a["fb"] / 100) / a["cur"]
         pnl = back / cost - 1
         days = (now.date() - date.fromisoformat(h["date"])).days if h.get("date") else 0
-        txt = f"{h['amount']:,.2f} {h['ccy']} converts back to S${back:,.2f} now (paid S${cost:,.2f}, {pnl:+.2%} after fees)."
+        unit = f" {a['unit']} of {a['name'].lower()}" if a["kind"] == "metal" else f" {h['ccy']}"
+        txt = (f"{h['amount']:,.4g}{unit} sells back for S${back:,.2f} now (paid S${cost:,.2f}, {pnl:+.2%} after fees). "
+               f"{both_ways(a)}.")
         if pnl * 100 >= TAKE_PROFIT_PCT:
-            out.append((f"SELL:{h['ccy']}:{hid}", f"Sell {h['ccy']} back to SGD: {pnl:+.2%}", txt))
+            out.append((f"SELL:{h['ccy']}:{hid}", f"Sell {a['name'] if a['kind'] == 'metal' else h['ccy']} back to SGD: {pnl:+.2%}", txt))
         elif STOP_LOSS_PCT and pnl * 100 <= -STOP_LOSS_PCT:
             out.append((f"STOP:{h['ccy']}:{hid}", f"{h['ccy']} holding down {pnl:.2%}", txt))
         elif MAX_HOLD_DAYS and days >= MAX_HOLD_DAYS:
@@ -297,15 +396,30 @@ def signals(an):
 
 
 # ------------------------------------------------------------------ email
-def table(an):
-    rows = "".join(
-        f"<tr><td><b>{c}</b>{' (send)' if a['send_only'] else ''}</td><td>{fmt(a['cur'])}</td><td>{a['rank']:.0%}</td>"
-        f"<td style='color:{'#16774a' if a['verdict'] == 'good' else '#b1372b' if a['verdict'] == 'weak' else '#56665f'}'>{a['verdict']}</td>"
-        f"<td>{a['trend_wk']:+.2%}/wk</td><td>{fmt(a['r7'][0])}-{fmt(a['r7'][1])}</td><td>{a['f']:.2f}%</td></tr>"
-        for c, a in an.items())
-    return ("<table cellpadding='6' style='border-collapse:collapse;font:14px Arial'><tr style='background:#eef2f0'>"
-            "<th>Currency</th><th>1 SGD =</th><th>Beats</th><th>Verdict</th><th>Recent trend</th><th>Likely in 7d</th><th>Fee</th></tr>"
-            f"{rows}</table>")
+def table(an, kind="currency"):
+    rows = []
+    for c, a in an.items():
+        if a["kind"] != kind:
+            continue
+        col = "#16774a" if a["verdict"] == "good" else "#b1372b" if a["verdict"] == "weak" else "#56665f"
+        word = ("buy now" if a["verdict"] == "good" else "dear - good to sell" if a["verdict"] == "weak" else "middling") \
+            if kind == "metal" else a["verdict"]
+        left = (f"<td>S${a['inv']:,.2f}/g</td><td>S${a['inv'] * OZ_G:,.0f}/oz</td>" if kind == "metal"
+                else f"<td>{fmt(a['cur'])}</td><td>S${a['inv']:,.4f}</td>")
+        rows.append(f"<tr><td><b>{a['name'] if kind == 'metal' else c}</b>{' (send)' if a['send_only'] else ''}</td>{left}"
+                    f"<td>{a['rank']:.0%}</td><td style='color:{col}'>{word}</td>"
+                    f"<td>{a['trend_wk']:+.2%}/wk</td><td>{a['f']:.2f}%</td></tr>")
+    if not rows:
+        return ""
+    head = ("<th>Metal</th><th>1 gram</th><th>1 ounce</th><th>Cheaper than</th><th>Advice</th><th>Recent trend</th><th>Spread</th>"
+            if kind == "metal" else
+            "<th>Currency</th><th>1 SGD buys</th><th>1 unit sells for</th><th>Beats</th><th>Verdict</th><th>Recent trend</th><th>Fee</th>")
+    return ("<table cellpadding='6' style='border-collapse:collapse;font:14px Arial;margin-bottom:14px'>"
+            f"<tr style='background:#eef2f0'>{head}</tr>" + "".join(rows) + "</table>")
+
+
+def tables(an):
+    return table(an, "currency") + table(an, "metal")
 
 
 def send(subject, html, attach=None):
@@ -399,17 +513,24 @@ def dashboard(data, an, sigs, label):
     note = ("Signals now: " + "; ".join(s[1] for s in sigs) + ".") if sigs else "No buy or sell signals right now."
     snap = {"app": "wise-fx-watch", "base": BASE, "savedAt": int(time.time() * 1000), "demo": DEMO, "label": label,
             "repo": os.environ.get("GITHUB_REPOSITORY", ""), "holdings": HOLDINGS, "targets": TARGETS,
-            "takeProfit": TAKE_PROFIT_PCT, "maxHold": MAX_HOLD_DAYS,
+            "takeProfit": TAKE_PROFIT_PCT, "maxHold": MAX_HOLD_DAYS, "buyRank": BUY_RANK,
             "note": note + f" Checked {datetime.now(SGT):%d %b %H:%M} SGT; updates hourly.",
-            "currencies": {c: {"hist": d["hist"], "live": {"t": d["live"][0], "v": d["live"][1]}, "hold": c not in SEND_ONLY,
+            "metalSpread": METAL_SPREAD_PCT, "ozGrams": OZ_G,
+            "currencies": {c: {"hist": d["hist"], "live": {"t": d["live"][0], "v": d["live"][1]},
+                               "hold": an[c]["kind"] == "metal" or c not in SEND_ONLY,
+                               "kind": an[c]["kind"], "name": an[c]["name"],
                                "fee": an[c]["f"], "feeBack": an[c]["fb"] or None} for c, d in data.items()}}
     js = json.dumps(snap).replace("</", "<\\/")
     head = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta http-equiv="refresh" content="1800"><style>body{margin:0}[hidden]{display:none!important}</style>'
             f'<script>window.FX_SNAPSHOT={js}</script></head><body>')
+    page = head + (ROOT / "dashboard_template.html").read_text(encoding="utf-8") + "</body></html>"
     DOCS.mkdir(exist_ok=True)
     p = DOCS / "index.html"
-    p.write_text(head + (ROOT / "dashboard_template.html").read_text(encoding="utf-8") + "</body></html>", encoding="utf-8")
+    p.write_text(page, encoding="utf-8")
+    # also at the repo root, so the dashboard shows whichever way GitHub Pages is configured
+    (ROOT / "index.html").write_text(page, encoding="utf-8")
+    (ROOT / ".nojekyll").write_text("", encoding="utf-8")
     return p
 
 
@@ -430,16 +551,33 @@ def run():
             send("can't reach any rate source", "<p>The last 3 checks couldn't load rates from Wise or the ECB fallback.</p>")
         (DATA / "state.json").write_text(json.dumps(state, indent=1))
         sys.exit(1)
+    usd = data.get("USD")
+    if METALS and not DEMO and not usd:
+        try:
+            usd = load("USD")
+        except Exception as e:
+            print(f"  USD needed for metal prices, but it failed ({e})")
+    for m in METALS:
+        try:
+            data[m] = load_metal(m, usd["hist"] if usd else [])
+        except Exception as e:
+            failed.append(m)
+            print(f"  {m}: no metal price ({e})")
     an = {}
     for c, d in data.items():
         f = fb = None
+        if d.get("kind") == "metal":
+            an[c] = analyze(c, d, METAL_SPREAD_PCT, METAL_SPREAD_PCT)
+            a = an[c]
+            print(f"  {c} ({a['name']}): S${a['inv']:,.2f}/g [{d['src']}] cheaper than {a['rank']:.0%}, {a['verdict']}")
+            continue
         if d["src"] == "wise":
             f = wise_fee(BASE, c, AMOUNT_SGD)
             fb = None if c in SEND_ONLY else wise_fee(c, BASE, round(AMOUNT_SGD * d["live"][1], 2))
         an[c] = analyze(c, d, f or FEE_PCT.get(c, .6), 0 if c in SEND_ONLY else (fb or FEE_PCT.get(c, .6)))
         a = an[c]
         print(f"  {c}: {fmt(a['cur'])} [{d['src']}] beats {a['rank']:.0%}, {a['verdict']}, model {a['model']}")
-    srcs = {d["src"] for d in data.values()}
+    srcs = {d["src"] for d in data.values() if d.get("kind") != "metal"}
     label = "Demo (simulated)" if DEMO else "Live · Wise rates" if srcs == {"wise"} else "Partly ECB fallback"
     sigs = signals(an)
     dash = dashboard(data, an, sigs, label)
@@ -453,7 +591,7 @@ def run():
     if new:
         ccys = {k.split(":")[1] for k, _, _ in new}
         ok = send(" | ".join(t for _, t, _ in new), "".join(f"<h2 style='font:600 18px Arial'>{t}</h2><p>{x}</p>" for _, t, x in new)
-                  + table({c: an[c] for c in an if c in ccys}))
+                  + tables({c: an[c] for c in an if c in ccys}))
         if ok:
             with open(DATA / "signals.csv", "a", newline="") as fh:
                 for k, t, _ in new:
@@ -466,7 +604,7 @@ def run():
             state["warned_src"] = str(now.date())
     if SUMMARY_HOUR_SGT is not None and now.hour >= SUMMARY_HOUR_SGT and state.get("summary") != str(now.date()):
         lines = "".join(f"<li>{t}: {x}</li>" for _, t, x in sigs) or "<li>No buy or sell signals today.</li>"
-        if send(f"daily summary {now:%d %b}", f"<h2 style='font:600 18px Arial'>Rates at {now:%H:%M} SGT</h2><ul>{lines}</ul>{table(an)}"
+        if send(f"daily summary {now:%d %b}", f"<h2 style='font:600 18px Arial'>Rates at {now:%H:%M} SGT</h2><ul>{lines}</ul>{tables(an)}"
                 f"<p style='color:#555'>Beats = share of the last {LOOKBACK_DAYS} days with a worse rate. Likely in 7d = 68% range.</p>", dash):
             state["summary"] = str(now.date())
     state["fails"] = 0
