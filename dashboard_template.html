@@ -150,7 +150,18 @@ footer{font-size:.82rem;color:var(--muted);display:flex;flex-direction:column;ga
     <div class="sechead"><h2 id="boardH">Convert now or wait?</h2><span class="small muted" id="boardNote"></span></div>
     <div class="tscroll"><table id="board">
       <thead><tr>
-        <th>Currency</th><th>Verdict</th><th class="r">1 SGD buys</th><th>Today vs past days</th><th class="r">vs 30-day avg</th><th class="r">Wise fee</th><th class="r" id="getHead">You get</th><th class="r" id="chanceHead">Chance of better</th>
+        <th>Currency</th><th>Verdict</th><th class="r">1 SGD buys</th><th class="r">1 unit sells for</th><th>Today vs past days</th><th class="r">vs 30-day avg</th><th class="r">Wise fee</th><th class="r" id="getHead">You get</th><th class="r" id="chanceHead">Chance of better</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section id="metalSec" aria-labelledby="metalH" hidden>
+    <div class="sechead"><h2 id="metalH">Gold and other metals</h2><span class="small muted" id="metalNote"></span></div>
+    <p class="truth"><b>Wise does not sell gold, silver or platinum.</b> These are world market prices converted to SGD, so you can time a purchase with a dealer or bank that does sell them. Their buy and sell prices sit a few percent either side of this, which is the spread used below.</p>
+    <div class="tscroll"><table id="metals">
+      <thead><tr>
+        <th>Metal</th><th>Advice</th><th class="r">1 gram costs</th><th class="r">1 ounce costs</th><th>Today vs past days</th><th class="r">vs 30-day avg</th><th class="r" id="mGetHead">You get</th><th class="r">Needs to rise</th>
       </tr></thead>
       <tbody></tbody>
     </table></div>
@@ -161,7 +172,7 @@ footer{font-size:.82rem;color:var(--muted);display:flex;flex-direction:column;ga
     <div class="detail">
       <div class="panel">
         <p class="summary" id="summary"></p>
-        <div class="legend"><span><i></i>Wise rate</span><span><i class="ma"></i>30-day average</span><span><i class="band"></i>Likely range ahead (68% inner, 95% outer)</span></div>
+        <div class="legend"><span><i></i><span id="legendRate">Wise rate</span></span><span><i class="ma"></i>30-day average</span><span><i class="band"></i>Likely range ahead (68% inner, 95% outer)</span></div>
         <div class="chartbox" id="chart"></div>
       </div>
       <div class="panel stats" id="stats"></div>
@@ -193,7 +204,7 @@ footer{font-size:.82rem;color:var(--muted);display:flex;flex-direction:column;ga
         <h3>I bought a currency in Wise</h3>
         <div class="formrow mt">
           <label class="field">Currency<select id="hCcy"></select></label>
-          <label class="field">Amount you received<input id="hAmt" type="number" min="0" step="any" placeholder="e.g. 24.31"></label>
+          <label class="field">Amount you received<input id="hAmt" type="number" min="0" step="any" placeholder="e.g. 24.31"><span class="small muted" id="hUnit">units of that currency</span></label>
           <label class="field">SGD you paid<input id="hSgd" type="number" min="0" step="any" placeholder="e.g. 20"></label>
           <label class="field">Date<input id="hDate" type="date"></label>
         </div>
@@ -296,7 +307,9 @@ function $(s,r){return (r||document).querySelector(s)}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 var store={get:function(k,d){try{var v=localStorage.getItem('fxdesk:'+k);return v?JSON.parse(v):d}catch(e){return d}},set:function(k,v){try{localStorage.setItem('fxdesk:'+k,JSON.stringify(v))}catch(e){}}};
 
-var NAMES={USD:'US dollar',EUR:'Euro',GBP:'British pound',AUD:'Australian dollar',NZD:'New Zealand dollar',CAD:'Canadian dollar',CHF:'Swiss franc',JPY:'Japanese yen',HKD:'Hong Kong dollar',MYR:'Malaysian ringgit',CNY:'Chinese yuan',INR:'Indian rupee',LKR:'Sri Lankan rupee',THB:'Thai baht',IDR:'Indonesian rupiah',PHP:'Philippine peso',SGD:'Singapore dollar',KRW:'South Korean won',VND:'Vietnamese dong',AED:'UAE dirham'};
+var METAL_NAMES={XAU:'Gold',XAG:'Silver',XPT:'Platinum',XPD:'Palladium'};
+var OZ_G=(window.FX_SNAPSHOT&&window.FX_SNAPSHOT.ozGrams)||31.1034768;
+var NAMES={XAU:'Gold',XAG:'Silver',XPT:'Platinum',XPD:'Palladium',USD:'US dollar',EUR:'Euro',GBP:'British pound',AUD:'Australian dollar',NZD:'New Zealand dollar',CAD:'Canadian dollar',CHF:'Swiss franc',JPY:'Japanese yen',HKD:'Hong Kong dollar',MYR:'Malaysian ringgit',CNY:'Chinese yuan',INR:'Indian rupee',LKR:'Sri Lankan rupee',THB:'Thai baht',IDR:'Indonesian rupiah',PHP:'Philippine peso',SGD:'Singapore dollar',KRW:'South Korean won',VND:'Vietnamese dong',AED:'UAE dirham'};
 // Demo levels are rough, made-up starting points for simulated data only.
 var DEMO={USD:[0.776,0.0028],EUR:[0.668,0.0032],GBP:[0.579,0.0033],AUD:[1.18,0.0042],NZD:[1.33,0.0045],CAD:[1.07,0.0033],CHF:[0.62,0.0035],JPY:[115.2,0.0045],HKD:[6.04,0.0028],MYR:[3.29,0.003],CNY:[5.52,0.0025],INR:[67.4,0.0032],LKR:[232.5,0.0035],THB:[25.1,0.0038],IDR:[12650,0.0035],PHP:[44.6,0.0034]};
 var DEFAULT_CUR={
@@ -309,6 +322,7 @@ var DEFAULT_CUR={
   INR:{hold:false,fee:0.7,feeBack:0,fixed:0},
   LKR:{hold:false,fee:1.0,feeBack:0,fixed:0}
 };
+var BUY_RANK=(window.FX_SNAPSHOT&&window.FX_SNAPSHOT.buyRank)||0.8;
 var S=Object.assign({amount:20,horizon:14,lookback:90,target:0.5,entry:20,tp:0.5,hold:30,funding:['SGD'],selected:'USD',cur:null},store.get('settings',{}));
 if(!S.cur||typeof S.cur!=='object')S.cur=JSON.parse(JSON.stringify(DEFAULT_CUR));
 var data={};      // code -> {hist:[[t,v]], live:{t,v}|null, src:'demo'|'wise'|'pasted', err}
@@ -319,6 +333,10 @@ var lastUpdated=null,SRC_LABEL='';
 function saveS(){store.set('settings',S)}
 function saveW(){store.set('wallet',wallet)}
 function codes(){return Object.keys(S.cur)}
+function isMetal(c){return !!(S.cur[c]&&S.cur[c].kind==='metal')}
+function fxCodes(){return codes().filter(function(c){return !isMetal(c)})}
+function metalCodes(){return codes().filter(isMetal)}
+function amt(v,c){return isMetal(c)?(isFinite(v)?v.toLocaleString('en-SG',{maximumFractionDigits:v<1?4:3})+' g':'\u2013'):money(v,c)}
 
 /* ---------- numbers ---------- */
 function mean(a){var s=0;for(var i=0;i<a.length;i++)s+=a[i];return a.length?s/a.length:NaN}
@@ -370,7 +388,7 @@ function feeSrc(c){return liveFee[c]?'Wise quote':'Estimate'}
 function initData(){
   var snap=window.FX_SNAPSHOT;
   if(snap&&snap.currencies){Object.keys(snap.currencies).forEach(function(c){var x=snap.currencies[c];if(!x.hist||x.hist.length<35)return;
-    if(!S.cur[c])S.cur[c]={hold:x.hold!==false,fee:0.5,feeBack:0.5,fixed:0};data[c]={hist:cleanHist(x.hist),live:x.live||null,src:'wise'};if(x.fee!=null)liveFee[c]={fee:x.fee,feeBack:x.feeBack!=null?x.feeBack:S.cur[c].feeBack,at:snap.savedAt}});
+    if(!S.cur[c])S.cur[c]={hold:x.hold!==false,fee:0.5,feeBack:0.5,fixed:0};S.cur[c].kind=x.kind||'currency';S.cur[c].hold=x.hold!==false;if(x.name&&x.kind==='metal')NAMES[c]=x.name;data[c]={hist:cleanHist(x.hist),live:x.live||null,src:'wise'};if(x.fee!=null)liveFee[c]={fee:x.fee,feeBack:x.feeBack!=null?x.feeBack:S.cur[c].feeBack,at:snap.savedAt}});
     lastUpdated=snap.savedAt;if(snap.note)$('#banner').dataset.err=snap.note;}
   var pasted=store.get('pasted',{});
   codes().forEach(function(c){
@@ -405,7 +423,7 @@ function analyze(c){
   return {c:c,vals:vals,cur:cur,rank:rank,lo:lo,hi:hi,ma30:ma30,vsMa:cur/ma30-1,sigma:sigma,f:f,fb:fb,fx:fx,feeAmt:feeAmt,receive:receive,hold:hold,be:be,
     r68:[cur*Math.exp(-sd),cur*Math.exp(sd)],r95:[cur*Math.exp(-2*sd),cur*Math.exp(2*sd)],
     pBetter:pTouch(S.target/100,sigma,N),targetRate:cur*(1+S.target/100),
-    verdict:rank>=0.8?'good':rank<=0.2?'bad':'mid',acc:mrAccuracy(vals,7)};
+    verdict:rank>=BUY_RANK?'good':rank<=1-BUY_RANK?'bad':'mid',acc:mrAccuracy(vals,7)};
 }
 // Does "rate is below its 20-day average, so it will rise" (mean reversion) actually work here?
 function mrAccuracy(vals,H){
@@ -461,15 +479,16 @@ function renderStatus(){
 function renderBoard(){
   $('#getHead').textContent='You get for '+money(S.amount,'SGD');
   $('#chanceHead').textContent='+'+S.target+'% within '+S.horizon+'d';
-  var rows=codes().map(function(c){
+  var rows=fxCodes().map(function(c){
     var a=analyze(c);var name=NAMES[c]||'';
     var ccy='<div class="ccy"><b>'+esc(c)+(S.cur[c].hold?'':'<span class="tag">send only</span>')+(heldIn(c)?'<span class="tag" style="background:var(--accent-soft);color:var(--accent)">held</span>':'')+'</b><span>'+esc(name)+'</span></div>';
-    if(!a)return '<tr data-c="'+esc(c)+'" tabindex="0"><td>'+ccy+'</td><td colspan="7" class="muted">'+esc((data[c]&&data[c].err)||'No rate data yet')+'</td></tr>';
+    if(!a)return '<tr data-c="'+esc(c)+'" tabindex="0"><td>'+ccy+'</td><td colspan="8" class="muted">'+esc((data[c]&&data[c].err)||'No rate data yet')+'</td></tr>';
     var pos=Math.max(0,Math.min(1,(a.cur-a.lo)/((a.hi-a.lo)||1)));
     return '<tr data-c="'+esc(c)+'" tabindex="0" class="'+(c===S.selected?'sel':'')+'">'+
       '<td>'+ccy+'</td>'+
       '<td><span class="pill '+a.verdict+'">'+verdictText(a)+'</span></td>'+
       '<td class="r num">'+fr(a.cur)+'</td>'+
+      '<td class="r num">S$'+(1/a.cur).toFixed(a.cur>100?6:4)+'</td>'+
       '<td><div class="range"><div class="bar" title="Lowest '+fr(a.lo)+', highest '+fr(a.hi)+'"><span class="dot" style="left:'+(pos*100).toFixed(1)+'%"></span></div><span class="small">beats '+pct0(a.rank)+'</span></div></td>'+
       '<td class="r num '+(a.vsMa>0?'pos':a.vsMa<0?'neg':'')+'">'+pct(a.vsMa)+'</td>'+
       '<td class="r num">'+(a.f*100).toFixed(2)+'%'+(a.fx?' + S$'+a.fx:'')+'</td>'+
@@ -479,14 +498,58 @@ function renderBoard(){
   $('#board tbody').innerHTML=rows.join('');
   $('#boardNote').textContent='Verdict compares today with the last '+S.lookback+' days';
 }
+function metalAdvice(a){
+  if(a.verdict==='good')return ['good','Good time to buy'];
+  if(a.verdict==='bad')return ['bad','Dear \u2014 good to sell'];
+  return ['mid','Middling'];
+}
+function renderMetals(){
+  var list=metalCodes();
+  $('#metalSec').hidden=!list.length;
+  if(!list.length)return;
+  $('#mGetHead').textContent=money(S.amount,'SGD')+' buys';
+  var rows=list.map(function(c){
+    var a=analyze(c),nm='<div class="ccy"><b>'+esc(c)+'</b><span>'+esc(NAMES[c]||'')+'</span></div>';
+    if(!a)return '<tr data-c="'+esc(c)+'" tabindex="0"><td>'+nm+'</td><td colspan="7" class="muted">No price data yet</td></tr>';
+    var adv=metalAdvice(a),g=1/a.cur,pos=Math.max(0,Math.min(1,(a.cur-a.lo)/((a.hi-a.lo)||1)));
+    return '<tr data-c="'+esc(c)+'" tabindex="0" class="'+(c===S.selected?'sel':'')+'">'+
+      '<td>'+nm+'</td><td><span class="pill '+adv[0]+'">'+adv[1]+'</span></td>'+
+      '<td class="r num">S$'+g.toFixed(g<10?3:2)+'</td>'+
+      '<td class="r num">S$'+(g*OZ_G).toLocaleString('en-SG',{maximumFractionDigits:0})+'</td>'+
+      '<td><div class="range"><div class="bar" title="Cheapest S$'+(1/a.hi).toFixed(2)+' a gram, dearest S$'+(1/a.lo).toFixed(2)+'"><span class="dot" style="left:'+(pos*100).toFixed(1)+'%"></span></div><span class="small">cheaper than '+pct0(a.rank)+'</span></div></td>'+
+      '<td class="r num '+(a.vsMa>0?'pos':a.vsMa<0?'neg':'')+'">'+pct(a.vsMa)+'</td>'+
+      '<td class="r num">'+amt(a.receive,c)+'</td>'+
+      '<td class="r num">'+(a.be!=null?pct(a.be):'\u2013')+'</td></tr>';
+  });
+  $('#metals tbody').innerHTML=rows.join('');
+  $('#metalNote').textContent='Dealer spread assumed '+(feeOut(list[0])*100).toFixed(1)+'% each way \u2014 change it under Data and fees';
+}
 function renderDetail(){
   var c=S.selected;if(!S.cur[c]){c=S.selected=codes()[0]}
   var a=analyze(c);
-  $('#detailH').textContent=BASE+' → '+c+(NAMES[c]?' ('+NAMES[c]+')':'');
+  $('#detailH').textContent=isMetal(c)?(NAMES[c]||c)+' in SGD':BASE+' → '+c+(NAMES[c]?' ('+NAMES[c]+')':'');
   if(!a){$('#summary').textContent='No rate data for '+c+' yet.';$('#stats').innerHTML='';$('#chart').innerHTML='';return}
   var when=a.verdict==='good'?'That is a strong rate for you, so converting now is reasonable.':a.verdict==='bad'?'That is a weak rate for you. If you can wait, a better day is likely.':'That is an ordinary rate, neither a bargain nor a bad deal.';
   var hold=a.hold?'':' '+c+' is send-only on Wise, so this is the rate for sending money, not for holding it.';
-  $('#summary').innerHTML='Today 1 SGD buys <b class="num">'+fr(a.cur)+' '+esc(c)+'</b>, better than '+pct0(a.rank)+' of the last '+S.lookback+' days. '+when+hold+
+  if(isMetal(c)){
+    var g=1/a.cur,lo=1/a.hi,hi=1/a.lo;
+    $('#summary').innerHTML='One gram of '+esc((NAMES[c]||c).toLowerCase())+' costs <b class="num">S$'+g.toFixed(g<10?3:2)+'</b> today (one ounce S$'+(g*OZ_G).toLocaleString('en-SG',{maximumFractionDigits:0})+'), cheaper than '+pct0(a.rank)+' of the last '+S.lookback+' days, which ranged S$'+lo.toFixed(2)+' to S$'+hi.toFixed(2)+' a gram. '+
+      (a.verdict==='good'?'That is a cheap level, so buying now is reasonable.':a.verdict==='bad'?'That is an expensive level: a good moment to sell, a poor one to buy.':'That is an ordinary level.')+
+      ' '+money(S.amount,'SGD')+' buys about <b class="num">'+amt(a.receive,c)+'</b> after a '+(a.f*100).toFixed(1)+'% dealer spread. You pay that spread again on the way out, so the price must rise about '+pct(a.be)+' before selling makes money. Over the next '+S.horizon+' days it will most likely stay between S$'+(1/a.r68[1]).toFixed(2)+' and S$'+(1/a.r68[0]).toFixed(2)+' a gram.';
+    var mstats=[
+      ['Price now','S$'+g.toFixed(g<10?3:2)+' /g','S$'+(g*OZ_G).toLocaleString('en-SG',{maximumFractionDigits:0})+' an ounce'],
+      ['Last '+S.lookback+' days','S$'+lo.toFixed(2)+' \u2013 S$'+hi.toFixed(2),'Today is cheaper than '+pct0(a.rank)+' of them'],
+      ['Daily movement',(a.sigma*100).toFixed(2)+'%','Typical size of a one-day change'],
+      ['Likely in '+S.horizon+' days','S$'+(1/a.r68[1]).toFixed(2)+' \u2013 S$'+(1/a.r68[0]).toFixed(2),'95% range S$'+(1/a.r95[1]).toFixed(2)+' \u2013 S$'+(1/a.r95[0]).toFixed(2)],
+      ['Buy and sell spread',pct(a.be),'Price must rise this much before selling back pays'],
+      ['\u201cReturns to average\u201d guess',a.acc==null?'Not enough history':pct0(a.acc)+' right',a.acc==null?'':(Math.abs(a.acc-0.5)<0.06?'About a coin flip, so don\u2019t lean on it':a.acc>0.5?'Prices did tend to pull back':'Trends tended to continue')]
+    ];
+    $('#stats').innerHTML=mstats.map(function(x){return '<div class="stat"><span class="eyebrow">'+esc(x[0])+'</span><span class="v">'+esc(x[1])+'</span><span class="n">'+esc(x[2])+'</span></div>'}).join('');
+    $('#legendRate').textContent='Price per gram';
+    drawChart(a);return;
+  }
+  $('#legendRate').textContent='Wise rate';
+  $('#summary').innerHTML='Today 1 SGD buys <b class="num">'+fr(a.cur)+' '+esc(c)+'</b> (so 1 '+esc(c)+' sells back for <b class="num">S$'+(1/a.cur).toFixed(a.cur>100?6:4)+'</b>), better than '+pct0(a.rank)+' of the last '+S.lookback+' days. '+when+hold+
     ' Converting '+money(S.amount,'SGD')+' now gets you <b class="num">'+money(a.receive,c)+'</b> after a fee of '+money(a.feeAmt,'SGD')+'.'+
     ' Over the next '+S.horizon+' days the rate will most likely stay between '+fr(a.r68[0])+' and '+fr(a.r68[1])+'. '+
     'A rate of '+fr(a.targetRate)+' (+'+S.target+'%) has about a '+pct0(a.pBetter)+' chance of showing up in that time; you could set it as a rate alert in the Wise app.';
@@ -508,27 +571,28 @@ function niceStep(span,n){var raw=span/n,p=Math.pow(10,Math.floor(Math.log10(raw
 function drawChart(a){
   var box=$('#chart');var W=Math.max(320,box.clientWidth||700),H=Math.round(Math.min(340,Math.max(240,W*0.42)));
   var m={l:60,r:14,t:12,b:28};
+  var inv=isMetal(a.c),TV=function(v){return inv?1/v:v},FY=function(v){return inv?'S$'+v.toFixed(v<10?3:2):fr(v)};
   var h=data[a.c].hist,show=Math.min(h.length,Math.max(60,S.lookback));
-  var pts=h.slice(-show).map(function(p){return [p[0],p[1]]});
+  var pts=h.slice(-show).map(function(p){return [p[0],TV(p[1])]});
   var lastT=pts[pts.length-1][0];
-  if(data[a.c].live&&data[a.c].live.t>lastT){pts.push([data[a.c].live.t,data[a.c].live.v]);lastT=data[a.c].live.t}
-  var ma=[];for(var i=0;i<pts.length;i++){var gi=h.length-show+i;if(gi>=29&&gi<h.length)ma.push([pts[i][0],mean(h.slice(gi-29,gi+1).map(function(p){return p[1]}))])}
-  var N=S.horizon,fc=[];for(var d=0;d<=N;d++){var sd=a.sigma*Math.sqrt(d);fc.push([lastT+d*DAY,a.cur,a.cur*Math.exp(-sd),a.cur*Math.exp(sd),a.cur*Math.exp(-2*sd),a.cur*Math.exp(2*sd)])}
+  if(data[a.c].live&&data[a.c].live.t>lastT){pts.push([data[a.c].live.t,TV(data[a.c].live.v)]);lastT=data[a.c].live.t}
+  var ma=[];for(var i=0;i<pts.length;i++){var gi=h.length-show+i;if(gi>=29&&gi<h.length)ma.push([pts[i][0],TV(mean(h.slice(gi-29,gi+1).map(function(p){return p[1]})))])}
+  var N=S.horizon,fc=[];for(var d=0;d<=N;d++){var sd=a.sigma*Math.sqrt(d);fc.push([lastT+d*DAY,TV(a.cur),TV(a.cur*Math.exp(-sd)),TV(a.cur*Math.exp(sd)),TV(a.cur*Math.exp(-2*sd)),TV(a.cur*Math.exp(2*sd))])}
   var ys=pts.map(function(p){return p[1]}).concat(fc.map(function(f){return f[4]}),fc.map(function(f){return f[5]}));
   var y0=Math.min.apply(null,ys),y1=Math.max.apply(null,ys),pad=(y1-y0)*0.06||y0*0.01;y0-=pad;y1+=pad;
   var x0=pts[0][0],x1=fc[fc.length-1][0];
   function X(t){return m.l+(t-x0)/(x1-x0)*(W-m.l-m.r)}
   function Y(v){return m.t+(1-(v-y0)/(y1-y0))*(H-m.t-m.b)}
   var step=niceStep(y1-y0,4),g='';
-  for(var v=Math.ceil(y0/step)*step;v<=y1;v+=step){var yy=Y(v).toFixed(1);g+='<line x1="'+m.l+'" x2="'+(W-m.r)+'" y1="'+yy+'" y2="'+yy+'" stroke="var(--line)" stroke-width="1"/><text x="'+(m.l-8)+'" y="'+yy+'" dy="0.32em" text-anchor="end" font-size="11" fill="var(--muted)" font-family="var(--f-mono)">'+fr(v)+'</text>'}
+  for(var v=Math.ceil(y0/step)*step;v<=y1;v+=step){var yy=Y(v).toFixed(1);g+='<line x1="'+m.l+'" x2="'+(W-m.r)+'" y1="'+yy+'" y2="'+yy+'" stroke="var(--line)" stroke-width="1"/><text x="'+(m.l-8)+'" y="'+yy+'" dy="0.32em" text-anchor="end" font-size="11" fill="var(--muted)" font-family="var(--f-mono)">'+FY(v)+'</text>'}
   // month ticks
   var dt=new Date(x0);dt.setUTCDate(1);dt.setUTCMonth(dt.getUTCMonth()+1);var xt='',lastX=-99;
   var spanDays=(x1-x0)/DAY,every=spanDays>200?2:1;var mi=0;
   while(dt.getTime()<x1){var xx=X(dt.getTime());if(mi%every===0&&xx-lastX>40){xt+='<text x="'+xx.toFixed(1)+'" y="'+(H-8)+'" text-anchor="middle" font-size="11" fill="var(--muted)">'+dt.toLocaleDateString('en-SG',{month:'short',timeZone:'UTC'})+'</text><line x1="'+xx.toFixed(1)+'" x2="'+xx.toFixed(1)+'" y1="'+(H-m.b)+'" y2="'+(H-m.b+4)+'" stroke="var(--muted)"/>';lastX=xx}dt.setUTCMonth(dt.getUTCMonth()+1);mi++}
   function line(arr,yi){return arr.map(function(p,i){return (i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[yi]).toFixed(1)}).join('')}
   function band(lo,hi){return fc.map(function(f,i){return (i?'L':'M')+X(f[0]).toFixed(1)+' '+Y(f[hi]).toFixed(1)}).join('')+fc.slice().reverse().map(function(f){return 'L'+X(f[0]).toFixed(1)+' '+Y(f[lo]).toFixed(1)}).join('')+'Z'}
-  var cx=X(lastT),cy=Y(a.cur);
-  var svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+esc(BASE+' to '+a.c+' Wise rate, last '+show+' days, with a '+N+'-day likely range')+'">'+g+xt+
+  var cx=X(lastT),cy=Y(TV(a.cur));
+  var svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+esc((inv?(NAMES[a.c]||a.c)+' price in SGD per gram':BASE+' to '+a.c+' Wise rate')+', last '+show+' days, with a '+N+'-day likely range')+'">'+g+xt+
     '<line x1="'+m.l+'" x2="'+(W-m.r)+'" y1="'+(H-m.b)+'" y2="'+(H-m.b)+'" stroke="var(--muted)" stroke-width="1"/>'+
     '<path d="'+band(4,5)+'" fill="var(--accent-soft)" opacity="0.7"/>'+
     '<path d="'+band(2,3)+'" fill="var(--accent-soft)"/>'+
@@ -549,7 +613,7 @@ function drawChart(a){
     if(!best)return;var px=X(best.t),py=Y(best.v);
     hov.style.display='';hl.setAttribute('x1',px);hl.setAttribute('x2',px);hc.setAttribute('cx',px);hc.setAttribute('cy',py);
     var ds=new Date(best.t).toLocaleDateString('en-SG',{day:'numeric',month:'short',timeZone:'UTC'});
-    tip.hidden=false;tip.textContent=best.k==='h'?ds+'  '+fr(best.v):ds+'  likely '+fr(best.lo)+'–'+fr(best.hi);
+    tip.hidden=false;tip.textContent=best.k==='h'?ds+'  '+FY(best.v):ds+'  likely '+FY(Math.min(best.lo,best.hi))+'–'+FY(Math.max(best.lo,best.hi));
     var tx=px*r.width/W;tip.style.left=Math.max(70,Math.min(r.width-70,tx))+'px';tip.style.top=(py*r.height/H)+'px';
   }
   var hit=$('#hit');hit.addEventListener('pointermove',move);hit.addEventListener('pointerleave',function(){hov.style.display='none';tip.hidden=true});
@@ -559,7 +623,7 @@ function renderBacktest(){
   $('#btFinalHead').textContent=money(S.amount,'SGD')+' became';
   var best=null;
   var rows=codes().map(function(c){
-    var b=backtest(c);var ccy='<div class="ccy"><b>'+esc(c)+'</b><span>'+esc(NAMES[c]||'')+'</span></div>';
+    var b=backtest(c);var ccy='<div class="ccy"><b>'+esc(c)+'</b><span>'+esc(NAMES[c]||'')+(isMetal(c)?' (dealer spread)':'')+'</span></div>';
     if(!b)return S.cur[c].hold?'':'<tr><td>'+ccy+'</td><td colspan="6" class="muted">Send-only on Wise, so you can’t convert back to SGD</td></tr>';
     var pl=b.final-S.amount;if(!best||b.final>best.final)best={c:c,final:b.final,n:b.trades.length};
     var open=b.trades.length&&b.trades[b.trades.length-1].open;
@@ -575,7 +639,7 @@ function renderBacktest(){
 }
 
 /* ---------- wallet ---------- */
-function allCodes(){return [BASE].concat(codes())}
+function allCodes(){return [BASE].concat(fxCodes())}
 function walletValue(){var t=0;Object.keys(wallet.bal).forEach(function(c){var r=rate(c);if(wallet.bal[c]>0&&isFinite(r))t+=wallet.bal[c]/r});return t}
 function quoteEst(from,to,amt){
   // returns {fee (in from ccy), got (in to ccy), src}
@@ -621,9 +685,14 @@ function doConvert(){
 
 /* ---------- data & fee table ---------- */
 function renderCfg(){
-  $('#cfg tbody').innerHTML=codes().map(function(c){var s=S.cur[c],d=data[c]||{};
-    var src=d.src==='wise'?'Live from Wise':d.src==='pasted'?'Pasted from Wise':d.err?esc(d.err):'Simulated demo';
-    var l=liveFee[c];
+  $('#cfg tbody').innerHTML=codes().map(function(c){var s=S.cur[c],d=data[c]||{},l=liveFee[c];
+    var src=d.src==='metal'?'World metal price':d.src==='wise'?'Live from Wise':d.src==='pasted'?'Pasted from Wise':d.err?esc(d.err):'Simulated demo';
+    if(isMetal(c))return '<tr><td><div class="ccy"><b>'+esc(c)+'</b><span>'+esc(NAMES[c]||'')+'</span></div></td>'+
+      '<td class="small muted">not in Wise</td>'+
+      '<td class="r"><input type="number" step="0.1" min="0" id="fee-'+c+'" data-k="fee" data-c="'+c+'" value="'+(l&&l.fee!=null?(+l.fee).toFixed(2):s.fee)+'" aria-label="Dealer spread buying '+c+'"></td>'+
+      '<td class="r"><input type="number" step="0.1" min="0" id="feeBack-'+c+'" data-k="feeBack" data-c="'+c+'" value="'+(l&&l.feeBack!=null?(+l.feeBack).toFixed(2):s.feeBack)+'" aria-label="Dealer spread selling '+c+'"></td>'+
+      '<td class="r">\u2013</td><td><span class="pill mid">Dealer spread</span></td><td class="small">'+src+'</td>'+
+      '<td><button type="button" data-rm="'+c+'" aria-label="Remove '+c+'">Remove</button></td></tr>';
     return '<tr><td><div class="ccy"><b>'+esc(c)+'</b><span>'+esc(NAMES[c]||'')+'</span></div></td>'+
     '<td><input type="checkbox" id="hold-'+c+'" data-k="hold" data-c="'+c+'"'+(s.hold?' checked':'')+' aria-label="'+c+' can be held"></td>'+
     '<td class="r"><input type="number" step="0.01" min="0" id="fee-'+c+'" data-k="fee" data-c="'+c+'" value="'+(l&&l.fee!=null?(+l.fee).toFixed(3):s.fee)+'"'+(l?' disabled title="From a live Wise quote"':'')+' aria-label="Fee SGD to '+c+'"></td>'+
@@ -649,28 +718,31 @@ function openIssue(title,f){
 function heldIn(c){return HOLD.some(function(h){return h.ccy===c})}
 function renderHoldings(){
   var sec=$('#holdSec');if(!REPO){sec.hidden=true;return}sec.hidden=false;
-  $('#sellHead').textContent='Sell when 1 SGD buys up to (+'+TP+'%)';
+  $('#sellHead').textContent='Sell target (+'+TP+'% after fees)';
   var tp=0,tw=0,rows=HOLD.map(function(h){
-    var c=h.ccy,r=rate(c),ok=S.cur[c]&&isFinite(r),name='<div class="ccy"><b>'+esc(c)+'</b><span>'+esc(h.note||(h.date?'bought '+h.date:''))+'</span></div>';
+    var c=h.ccy,r=rate(c),ok=S.cur[c]&&isFinite(r),name='<div class="ccy"><b>'+esc(isMetal(c)?(NAMES[c]||c):c)+'</b><span>'+esc(h.note||(h.date?'bought '+h.date:''))+'</span></div>';
     var btn='<button type="button" data-sold="'+esc(h.id||'')+'" data-c="'+esc(c)+'">I sold this</button>';
-    if(!ok)return '<tr><td>'+name+'</td><td class="r num">'+money(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td colspan="4" class="muted">Not tracked: add '+esc(c)+' under Data and fees</td><td>'+btn+'</td></tr>';
+    if(!ok)return '<tr><td>'+name+'</td><td class="r num">'+amt(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td colspan="4" class="muted">Not tracked: add '+esc(c)+' under Data and fees</td><td>'+btn+'</td></tr>';
     var fb=feeBack(c),back=h.amount*(1-fb)/r,pnl=back/h.sgd-1,need=h.amount*(1-fb)/(h.sgd*(1+TP/100));
     var days=h.date?Math.floor((Date.now()-Date.parse(h.date))/86400000):0;tp+=h.sgd;tw+=back;
     var st=pnl*100>=TP?['good','Take profit']:days>=MAXHOLD?['bad','Held '+days+' days']:['mid','Hold'];
-    return '<tr><td>'+name+'</td><td class="r num">'+money(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td class="r num">'+money(back,'SGD')+'</td>'+
-      '<td class="r num '+(pnl>0?'pos':pnl<0?'neg':'')+'">'+pct(pnl)+'</td><td class="r num">'+fr(need)+' '+esc(c)+' <span class="small muted">(now '+fr(r)+')</span></td>'+
+    var tgt=isMetal(c)?'S$'+(1/need).toFixed((1/need)<10?3:2)+'/g <span class="small muted">(now S$'+(1/r).toFixed((1/r)<10?3:2)+')</span>'
+                      :fr(need)+' '+esc(c)+' <span class="small muted">(now '+fr(r)+')</span>';
+    return '<tr><td>'+name+'</td><td class="r num">'+amt(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td class="r num">'+money(back,'SGD')+'</td>'+
+      '<td class="r num '+(pnl>0?'pos':pnl<0?'neg':'')+'">'+pct(pnl)+'</td><td class="r num">'+tgt+'</td>'+
       '<td><span class="pill '+st[0]+'">'+st[1]+'</span></td><td>'+btn+'</td></tr>';
   });
   if(!rows.length)rows=['<tr><td colspan="8" class="muted">No holdings yet. After you buy a currency in Wise, add it below so the watcher can tell you when to sell.</td></tr>'];
   else if(HOLD.length>1&&tp)rows.push('<tr><td><b>Total</b></td><td></td><td class="r num">'+money(tp,'SGD')+'</td><td class="r num">'+money(tw,'SGD')+'</td><td class="r num '+(tw>tp?'pos':'neg')+'">'+pct(tw/tp-1)+'</td><td colspan="3"></td></tr>');
   $('#holdTbl tbody').innerHTML=rows.join('');
   var hs=$('#hCcy'),keep=hs.value||'AUD',list=codes().filter(function(c){return S.cur[c].hold});
-  hs.innerHTML=list.map(function(c){return '<option>'+esc(c)+'</option>'}).join('');if(list.indexOf(keep)>=0)hs.value=keep;
+  hs.innerHTML=list.map(function(c){return '<option value="'+esc(c)+'">'+esc(c)+(isMetal(c)?' \u2014 '+esc(NAMES[c]||'')+' (grams)':'')+'</option>'}).join('');if(list.indexOf(keep)>=0)hs.value=keep;
   var ts=$('#tCcy'),tk=ts.value;ts.innerHTML=codes().map(function(c){return '<option>'+esc(c)+'</option>'}).join('');if(tk&&S.cur[tk])ts.value=tk;
   var tl=Object.keys(TARGS).map(function(c){return '<span class="bal">'+esc(c)+' \u2265 '+fr(TARGS[c])+' <button type="button" data-untarget="'+esc(c)+'" aria-label="Remove alert for '+esc(c)+'">\u00d7</button></span>'});
   $('#tList').innerHTML=tl.join('')||'<span class="small muted">No alerts yet.</span>';
 }
 if($('#hDate'))$('#hDate').value=new Date(Date.now()+8*3600000).toISOString().slice(0,10);
+$('#hCcy').addEventListener('change',function(){$('#hUnit').textContent=isMetal(this.value)?'grams':'units of that currency'});
 $('#hAdd').addEventListener('click',function(){
   var c=$('#hCcy').value,amt=+$('#hAmt').value,sgd=+$('#hSgd').value,d=$('#hDate').value,m=$('#hMsg');
   if(!c||!(amt>0)||!(sgd>0)||!d){m.textContent='Enter the amount you received and the SGD you paid.';return}
@@ -681,8 +753,8 @@ $('#tAdd').addEventListener('click',function(){var c=$('#tCcy').value,r=+$('#tRa
 $('#holdTbl').addEventListener('click',function(e){var b=e.target.closest('button[data-sold]');if(!b)return;openIssue('FX wallet: sold '+b.dataset.c,b.dataset.sold?{action:'remove',id:b.dataset.sold}:{action:'remove',ccy:b.dataset.c})});
 $('#tList').addEventListener('click',function(e){var b=e.target.closest('button[data-untarget]');if(!b)return;openIssue('FX wallet: remove alert '+b.dataset.untarget,{action:'target',ccy:b.dataset.untarget,rate:''})});
 
-function renderAll(){renderStatus();renderBoard();renderDetail();renderBacktest();renderHoldings();renderWallet();renderCfg()}
-function renderAnalysis(){renderStatus();renderBoard();renderDetail();renderBacktest();renderHoldings();renderWallet()}
+function renderAll(){renderStatus();renderBoard();renderMetals();renderDetail();renderBacktest();renderHoldings();renderWallet();renderCfg()}
+function renderAnalysis(){renderStatus();renderBoard();renderMetals();renderDetail();renderBacktest();renderHoldings();renderWallet()}
 
 /* ---------- local app (live Wise) ---------- */
 function api(path){return fetch(path,{cache:'no-store'}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j})})}
@@ -716,7 +788,8 @@ function num(id,min,max){var v=+$(id).value;if(!isFinite(v))return null;return M
   el.addEventListener('change',function(){var k=id.slice(1),lim={amount:[1,1e7],horizon:[1,90],lookback:[30,365],target:[0.01,20],entry:[1,100],tp:[0,50],hold:[1,180]}[k];var v=num(id,lim[0],lim[1]);if(v==null)return;S[k]=v;el.value=v;saveS();
     if(k==='amount'&&LOCAL){loadWise(false)}else renderAnalysis()});
 });
-$('#board').addEventListener('click',function(e){var tr=e.target.closest('tr[data-c]');if(!tr)return;S.selected=tr.dataset.c;saveS();renderBoard();renderDetail()});
+$('#board').addEventListener('click',function(e){var tr=e.target.closest('tr[data-c]');if(!tr)return;S.selected=tr.dataset.c;saveS();renderBoard();renderMetals();renderDetail()});
+$('#metals').addEventListener('click',function(e){var tr=e.target.closest('tr[data-c]');if(!tr)return;S.selected=tr.dataset.c;saveS();renderBoard();renderMetals();renderDetail();$('#detailSec').scrollIntoView({behavior:'smooth',block:'start'})});
 $('#board').addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var tr=e.target.closest('tr[data-c]');if(!tr)return;e.preventDefault();S.selected=tr.dataset.c;saveS();renderBoard();renderDetail();var n=$('#board tr[data-c="'+S.selected+'"]');if(n)n.focus()});
 $('#refreshBtn').addEventListener('click',function(){loadWise(true)});
 $('#depBtn').addEventListener('click',function(){var c=$('#depCcy').value,a=+$('#depAmt').value;if(!c||!(a>0))return;wallet.bal[c]=(wallet.bal[c]||0)+a;wallet.deposits+=a/rate(c);wallet.log.push({t:Date.now(),a:'Added money',paid:'',got:money(a,c),fee:''});saveW();renderWallet()});
