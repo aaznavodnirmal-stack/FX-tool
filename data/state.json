@@ -9,8 +9,7 @@
  },
  "active": {
   "BUY:EUR": true,
-  "BUY:XAG": true,
-  "SELL:AUD:tmxyv8": true
+  "BUY:XAG": true
  },
  "fails": 0,
  "summary": "2026-10-21"
