@@ -5,13 +5,15 @@
   "TARGET:AUD": 1792055822.076691,
   "SELL:AUD:tmxyv8": 1792626000.748301,
   "BUY:XAG": 1792552236.231097,
-  "BUY:MYR": 1792611736.5416765
+  "BUY:MYR": 1792611736.5416765,
+  "BUY:XPT": 1792630352.1083648
  },
  "active": {
   "BUY:EUR": true,
   "BUY:XAG": true,
+  "BUY:XPT": true,
   "SELL:AUD:tmxyv8": true
  },
  "fails": 0,
- "summary": "2026-10-21"
+ "summary": "2026-10-22"
 }
