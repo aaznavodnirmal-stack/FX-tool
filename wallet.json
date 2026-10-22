@@ -1,4 +1,19 @@
 {
- "holdings": [],
+ "holdings": [
+  {
+   "id": "tmxyv8",
+   "ccy": "AUD",
+   "amount": 22.47,
+   "sgd": 20.0,
+   "date": "2026-10-15"
+  },
+  {
+   "id": "tnbdyk",
+   "ccy": "EUR",
+   "amount": 14.0,
+   "sgd": 20.07,
+   "date": "2026-10-22"
+  }
+ ],
  "targets": {}
 }
