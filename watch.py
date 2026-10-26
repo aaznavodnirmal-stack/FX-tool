@@ -19,7 +19,10 @@ TARGETS = {}                        # rate alerts (units per 1 SGD); also manage
 HOLDINGS = []                       # normally managed from the dashboard (saved in wallet.json); used only if wallet.json is missing
 FEE_PCT = {"USD": .45, "EUR": .45, "GBP": .45, "AUD": .45, "JPY": .5, "MYR": .6, "INR": .7, "LKR": 1.0}
 METALS = ["XAU", "XAG", "XPT"]      # gold, silver, platinum (XPD = palladium). [] switches metals off.
+METAL_ALERTS = False                # metals stay on the dashboard but never trigger an email
 METAL_SPREAD_PCT = 2.0              # what your metal dealer charges each way. Wise does NOT sell metals.
+SWITCH_GAIN_PCT = 1.0               # alert when moving a holding straight into another currency looks this
+                                    # much better than its own average, after the one conversion fee
 COOLDOWN_HOURS = 24                 # don't repeat the same signal more often than this
 SUMMARY_HOUR_SGT = 8                # daily summary email around 8am Singapore time (None = off)
 # =============================================================================
@@ -323,11 +326,31 @@ def wallet_request():
             w["holdings"].append(h)
             msg = f"Added {amount:g} {ccy} (paid S${sgd:g}, {d})."
         elif act == "remove":
-            keep = [h for h in w["holdings"] if not (h.get("id") == f["id"] if f.get("id") else h.get("ccy") == ccy)]
+            keep = [h for h in w["holdings"] if h.get("id") != f.get("id")] if f.get("id") else w["holdings"]
+            if len(keep) == len(w["holdings"]) and ccy:        # no id match, fall back to the currency
+                keep = [h for h in w["holdings"] if h.get("ccy") != ccy]
             if len(keep) == len(w["holdings"]):
                 raise ValueError("no matching holding (already removed?)")
             msg = f"Removed {len(w['holdings']) - len(keep)} holding(s). Nice trade."
             w["holdings"] = keep
+        elif act == "switch":
+            to = (f.get("to") or "").upper()
+            if not re.fullmatch("[A-Z]{3}", to):
+                raise ValueError("'to' must be a 3-letter currency code")
+            hit = [h for h in w["holdings"] if h.get("id") == f.get("id")] or \
+                  [h for h in w["holdings"] if h.get("ccy") == ccy]
+            if not hit:
+                raise ValueError("no matching holding to switch")
+            try:
+                amount = float(f["amount"])
+            except (KeyError, ValueError):
+                raise ValueError("fill in the amount of " + to + " you received")
+            if amount <= 0:
+                raise ValueError("amount must be positive")
+            h = hit[0]
+            msg = f"Switched {h['amount']:g} {h['ccy']} into {amount:g} {to}. Your S${h.get('sgd', 0):g} cost carries over."
+            h["note"] = f"was {h['amount']:g} {h['ccy']}"
+            h["ccy"], h["amount"] = to, round(amount, 4)
         elif act == "target":
             if not re.fullmatch("[A-Z]{3}", ccy):
                 raise ValueError("currency must be a 3-letter code")
@@ -350,11 +373,49 @@ def wallet_request():
     print(("OK: " if ok else "FAILED: ") + msg)
 
 
+# ------------------------------------------------------------------ switching one currency straight into another
+def cross_series(a, b, data):
+    """How many b you get for one a, day by day (both come from SGD rates, so the fees cancel out)."""
+    bm = {t // DAY_MS: v for t, v in data[b]["hist"]}
+    out, last = [], None
+    for t, av in data[a]["hist"]:
+        last = bm.get(t // DAY_MS, last)
+        if last and av:
+            out.append(last / av)
+    return out
+
+
+def switch_options(h, an, data, fees):
+    """Currencies worth moving this holding into right now, best first."""
+    src = h["ccy"]
+    if src not in an or an[src]["kind"] == "metal":
+        return []
+    out = []
+    for to, a in an.items():
+        if to == src or a["kind"] == "metal" or a["send_only"] or to not in data:
+            continue
+        ser = cross_series(src, to, data)
+        if len(ser) < 60:
+            continue
+        now = an[to]["cur"] / an[src]["cur"]
+        win = ser[-LOOKBACK_DAYS:]
+        rank, avg = sum(x < now for x in win) / len(win), mean(win)
+        fee = fees.get((src, to))
+        if fee is None:
+            fee = max(an[src]["fb"], a["f"])               # one hop, so one fee
+        edge = now / avg - 1
+        out.append({"to": to, "now": now, "rank": rank, "avg": avg, "fee": fee,
+                    "edge": edge, "net": edge - fee / 100, "gets": h["amount"] * now * (1 - fee / 100)})
+    return sorted(out, key=lambda o: -o["net"])
+
+
 # ------------------------------------------------------------------ signals
-def signals(an):
-    out, now = [], datetime.now(SGT)
+def signals(an, data=None, fees=None):
+    out, now, data, fees = [], datetime.now(SGT), data or {}, fees or {}
     held = {h["ccy"] for h in HOLDINGS}
     for c, a in an.items():
+        if a["kind"] == "metal" and not METAL_ALERTS:
+            continue
         cheap = "cheaper" if a["kind"] == "metal" else "better"
         why = (f"{both_ways(a)} - {cheap} than {a['rank']:.0%} of the last {LOOKBACK_DAYS} days "
                f"(range S${1 / a['hi']:,.2f}-S${1 / a['lo']:,.2f} per gram). Dealer spread {a['f']:.2f}% each way."
@@ -383,9 +444,21 @@ def signals(an):
         back = h["amount"] * (1 - a["fb"] / 100) / a["cur"]
         pnl = back / cost - 1
         days = (now.date() - date.fromisoformat(h["date"])).days if h.get("date") else 0
+        if a["kind"] == "metal" and not METAL_ALERTS:
+            continue
         unit = f" {a['unit']} of {a['name'].lower()}" if a["kind"] == "metal" else f" {h['ccy']}"
         txt = (f"{h['amount']:,.4g}{unit} sells back for S${back:,.2f} now (paid S${cost:,.2f}, {pnl:+.2%} after fees). "
                f"{both_ways(a)}.")
+        for o in switch_options(h, an, data, fees)[:1]:
+            if o["rank"] >= BUY_RANK and o["net"] * 100 >= SWITCH_GAIN_PCT:
+                out.append((f"SWITCH:{h['ccy']}>{o['to']}:{hid}",
+                            f"Move your {h['ccy']} into {o['to']} ({o['net']:+.1%} vs its own average)",
+                            f"1 {h['ccy']} buys {fmt(o['now'])} {o['to']} right now, better than {o['rank']:.0%} of the last "
+                            f"{LOOKBACK_DAYS} days and {o['edge']:+.2%} above the {LOOKBACK_DAYS}-day average. Converting "
+                            f"{h['amount']:,.4g} {h['ccy']} straight into {o['to']} costs one {o['fee']:.2f}% fee (going through "
+                            f"SGD would cost two) and leaves about {o['gets']:,.2f} {o['to']}. Your S${cost:,.2f} cost carries "
+                            f"over, so you are still in profit only once that sells back above S${cost:,.2f}. This is a bet "
+                            f"that the {h['ccy']}/{o['to']} rate returns to its average - it may not."))
         if pnl * 100 >= TAKE_PROFIT_PCT:
             out.append((f"SELL:{h['ccy']}:{hid}", f"Sell {a['name'] if a['kind'] == 'metal' else h['ccy']} back to SGD: {pnl:+.2%}", txt))
         elif STOP_LOSS_PCT and pnl * 100 <= -STOP_LOSS_PCT:
@@ -513,7 +586,7 @@ def dashboard(data, an, sigs, label):
     note = ("Signals now: " + "; ".join(s[1] for s in sigs) + ".") if sigs else "No buy or sell signals right now."
     snap = {"app": "wise-fx-watch", "base": BASE, "savedAt": int(time.time() * 1000), "demo": DEMO, "label": label,
             "repo": os.environ.get("GITHUB_REPOSITORY", ""), "holdings": HOLDINGS, "targets": TARGETS,
-            "takeProfit": TAKE_PROFIT_PCT, "maxHold": MAX_HOLD_DAYS, "buyRank": BUY_RANK,
+            "takeProfit": TAKE_PROFIT_PCT, "maxHold": MAX_HOLD_DAYS, "buyRank": BUY_RANK, "switchGain": SWITCH_GAIN_PCT,
             "note": note + f" Checked {datetime.now(SGT):%d %b %H:%M} SGT; updates hourly.",
             "metalSpread": METAL_SPREAD_PCT, "ozGrams": OZ_G,
             "currencies": {c: {"hist": d["hist"], "live": {"t": d["live"][0], "v": d["live"][1]},
@@ -579,7 +652,16 @@ def run():
         print(f"  {c}: {fmt(a['cur'])} [{d['src']}] beats {a['rank']:.0%}, {a['verdict']}, model {a['model']}")
     srcs = {d["src"] for d in data.values() if d.get("kind") != "metal"}
     label = "Demo (simulated)" if DEMO else "Live · Wise rates" if srcs == {"wise"} else "Partly ECB fallback"
-    sigs = signals(an)
+    fees = {}
+    if not DEMO:
+        for h in HOLDINGS:
+            for o in switch_options(h, an, data, {})[:2]:
+                pair = (h["ccy"], o["to"])
+                if pair not in fees:
+                    q = wise_fee(pair[0], pair[1], round(h["amount"], 2))
+                    if q:
+                        fees[pair] = q
+    sigs = signals(an, data, fees)
     dash = dashboard(data, an, sigs, label)
 
     now, nowts = datetime.now(SGT), time.time()
