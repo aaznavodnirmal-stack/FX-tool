@@ -9,11 +9,7 @@
   "BUY:XPT": 1792896006.666811,
   "BUY:XAU": 1792910867.1909711
  },
- "active": {
-  "BUY:XAU": true,
-  "BUY:XAG": true,
-  "BUY:XPT": true
- },
+ "active": {},
  "fails": 0,
  "summary": "2026-10-26"
 }
