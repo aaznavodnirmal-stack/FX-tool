@@ -19,7 +19,8 @@ permissions:
   issues: write
 
 concurrency:
-  group: fx-watch
+  # wallet edits get their own lane, so they are never queued away behind the hourly run
+  group: fx-watch-${{ github.event_name == 'issues' && github.event.issue.number || 'regular' }}
   cancel-in-progress: false
 
 jobs:
@@ -80,7 +81,7 @@ jobs:
         run: |
           rm -rf /tmp/keep && mkdir -p /tmp/keep
           cp -r data /tmp/keep/ 2>/dev/null || true
-          cp wallet.json /tmp/keep/ 2>/dev/null || true
+          [ "$GITHUB_EVENT_NAME" = "issues" ] && cp wallet.json /tmp/keep/ 2>/dev/null || true
           cp index.html /tmp/keep/ 2>/dev/null || true
           [ -d /tmp/keep/data ] || [ -f /tmp/keep/index.html ] || { echo "nothing to save"; exit 0; }
           git config user.name "fx-watch"
@@ -89,7 +90,7 @@ jobs:
             git fetch -q origin main
             git reset -q --hard origin/main
             [ -d /tmp/keep/data ] && { rm -rf data; cp -r /tmp/keep/data data; }
-            cp /tmp/keep/wallet.json wallet.json 2>/dev/null || true
+            cp /tmp/keep/wallet.json wallet.json 2>/dev/null || true   # only present on a wallet run
             cp /tmp/keep/index.html index.html 2>/dev/null || true
             touch .nojekyll
             git rm -r -q --cached --ignore-unmatch docs >/dev/null 2>&1 || true
