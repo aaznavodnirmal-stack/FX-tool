@@ -72,7 +72,7 @@ tr:last-child td{border-bottom:0}
 td.r,th.r{text-align:right}
 #board tbody tr{cursor:pointer}
 #board tbody tr:hover{background:var(--sunk)}
-#board tbody tr.sel{background:var(--accent-soft)}
+#board tbody tr.sel,#metals tbody tr.sel,#sw tbody tr.sel{background:var(--accent-soft)}
 .ccy{display:flex;flex-direction:column;line-height:1.2}
 .ccy b{font-family:var(--f-mono);font-weight:500;font-size:.95rem}
 .ccy span{font-size:.75rem;color:var(--muted)}
@@ -199,6 +199,14 @@ footer{font-size:.82rem;color:var(--muted);display:flex;flex-direction:column;ga
       <thead><tr><th>Currency</th><th class="r">You hold</th><th class="r">You paid</th><th class="r">Worth now</th><th class="r">Profit / loss</th><th class="r" id="sellHead">Sell when 1 SGD buys up to</th><th>Status</th><th></th></tr></thead>
       <tbody></tbody>
     </table></div>
+    <div id="swWrap" hidden>
+      <div class="sechead" style="margin-top:6px"><h3 id="swH">Better moves for what you hold</h3><span class="small muted" id="swNote"></span></div>
+      <div class="tscroll"><table id="sw">
+        <thead><tr><th>Move</th><th class="r">1 unit buys</th><th>Today vs past days</th><th class="r">vs average</th><th class="r">One fee</th><th class="r">Net edge</th><th class="r">You would get</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+
     <div class="cols2">
       <div class="panel">
         <h3>I bought a currency in Wise</h3>
@@ -709,19 +717,63 @@ function updatePasteLink(){var c=$('#pasteCcy').value||'USD';$('#pasteLink').hre
 
 
 /* ---------- my holdings (online watcher only) ---------- */
-var SNAP=window.FX_SNAPSHOT||null,REPO=SNAP&&SNAP.repo||'',HOLD=(SNAP&&SNAP.holdings)||[],TARGS=(SNAP&&SNAP.targets)||{},TP=(SNAP&&SNAP.takeProfit)||0.5,MAXHOLD=(SNAP&&SNAP.maxHold)||60;
+var SNAP=window.FX_SNAPSHOT||null,REPO=SNAP&&SNAP.repo||'',HOLD=(SNAP&&SNAP.holdings)||[],TARGS=(SNAP&&SNAP.targets)||{},TP=(SNAP&&SNAP.takeProfit)||0.5,MAXHOLD=(SNAP&&SNAP.maxHold)||60,SWITCH_GAIN=(SNAP&&SNAP.switchGain)||1;
 function openIssue(title,f){
   var body=Object.keys(f).map(function(k){return k+': '+f[k]}).join('\n');
   var a=document.createElement('a');a.href='https://github.com/'+REPO+'/issues/new?title='+encodeURIComponent(title)+'&body='+encodeURIComponent(body);
   a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();a.remove();
 }
 function heldIn(c){return HOLD.some(function(h){return h.ccy===c})}
+function crossSeries(from,to){
+  if(!data[from]||!data[to])return [];
+  var bm={},out=[],last=null;
+  (data[to].hist||[]).forEach(function(p){bm[Math.floor(p[0]/DAY)]=p[1]});
+  (data[from].hist||[]).forEach(function(p){var v=bm[Math.floor(p[0]/DAY)];if(v)last=v;if(last&&p[1])out.push(last/p[1])});
+  return out;
+}
+function switchOptions(h){
+  var src=h.ccy,rs=rate(src);
+  if(!S.cur[src]||isMetal(src)||!isFinite(rs))return [];
+  return fxCodes().filter(function(c){return c!==src&&S.cur[c].hold&&data[c]}).map(function(to){
+    var ser=crossSeries(src,to);if(ser.length<60)return null;
+    var now=rate(to)/rs;if(!isFinite(now)||!now)return null;
+    var win=ser.slice(-S.lookback),below=0,sum=0;
+    win.forEach(function(x){if(x<now)below++;sum+=x});
+    var avg=sum/win.length,fee=Math.max(feeBack(src),feeOut(to)),edge=now/avg-1;
+    return {h:h,to:to,now:now,rank:below/win.length,avg:avg,fee:fee,edge:edge,net:edge-fee,gets:h.amount*now*(1-fee)};
+  }).filter(Boolean).sort(function(a,b){return b.net-a.net});
+}
+function renderSwitches(){
+  var rows=[],any=false;
+  HOLD.forEach(function(h){
+    if(isMetal(h.ccy))return;
+    switchOptions(h).slice(0,3).forEach(function(o,i){
+      var good=o.rank>=BUY_RANK&&o.net*100>=SWITCH_GAIN,pos=Math.max(0,Math.min(1,o.rank));
+      if(good)any=true;
+      rows.push('<tr'+(good?' class="sel"':'')+'>'+
+        '<td><div class="ccy"><b>'+esc(h.ccy)+' \u2192 '+esc(o.to)+'</b><span>'+(i?'':esc(amt(h.amount,h.ccy)+' held'))+'</span></div></td>'+
+        '<td class="r num">'+fr(o.now)+'</td>'+
+        '<td><div class="range"><div class="bar"><span class="dot" style="left:'+(pos*100).toFixed(1)+'%"></span></div><span class="small">beats '+pct0(o.rank)+'</span></div></td>'+
+        '<td class="r num '+(o.edge>0?'pos':'neg')+'">'+pct(o.edge)+'</td>'+
+        '<td class="r num">'+(o.fee*100).toFixed(2)+'%</td>'+
+        '<td class="r num '+(o.net>0?'pos':'neg')+'">'+pct(o.net)+'</td>'+
+        '<td class="r num">'+money(o.gets,o.to)+'</td>'+
+        '<td>'+(good?'<button type="button" class="primary" data-sw="'+esc(h.id||'')+'" data-from="'+esc(h.ccy)+'" data-to="'+esc(o.to)+'" data-get="'+o.gets.toFixed(2)+'">I moved it</button>'
+                    :'<button type="button" data-sw="'+esc(h.id||'')+'" data-from="'+esc(h.ccy)+'" data-to="'+esc(o.to)+'" data-get="'+o.gets.toFixed(2)+'">I moved it</button>')+'</td></tr>');
+    });
+  });
+  $('#swWrap').hidden=!rows.length;
+  if(!rows.length)return;
+  $('#sw tbody').innerHTML=rows.join('');
+  $('#swNote').textContent=any?'Highlighted rows beat their own average by more than '+SWITCH_GAIN+'% after the fee'
+                              :'Nothing stands out today \u2014 none of these beats its own average by '+SWITCH_GAIN+'% after the fee';
+}
 function renderHoldings(){
   var sec=$('#holdSec');if(!REPO){sec.hidden=true;return}sec.hidden=false;
   $('#sellHead').textContent='Sell target (+'+TP+'% after fees)';
   var tp=0,tw=0,rows=HOLD.map(function(h){
     var c=h.ccy,r=rate(c),ok=S.cur[c]&&isFinite(r),name='<div class="ccy"><b>'+esc(isMetal(c)?(NAMES[c]||c):c)+'</b><span>'+esc(h.note||(h.date?'bought '+h.date:''))+'</span></div>';
-    var btn='<button type="button" data-sold="'+esc(h.id||'')+'" data-c="'+esc(c)+'">I sold this</button>';
+    var btn='<button type="button" data-sold="'+esc(h.id||'')+'" data-c="'+esc(c)+'" title="Removes this holding from the list">Sold / remove</button>';
     if(!ok)return '<tr><td>'+name+'</td><td class="r num">'+amt(h.amount,c)+'</td><td class="r num">'+money(h.sgd,'SGD')+'</td><td colspan="4" class="muted">Not tracked: add '+esc(c)+' under Data and fees</td><td>'+btn+'</td></tr>';
     var fb=feeBack(c),back=h.amount*(1-fb)/r,pnl=back/h.sgd-1,need=h.amount*(1-fb)/(h.sgd*(1+TP/100));
     var days=h.date?Math.floor((Date.now()-Date.parse(h.date))/86400000):0;tp+=h.sgd;tw+=back;
@@ -751,10 +803,13 @@ $('#hAdd').addEventListener('click',function(){
 });
 $('#tAdd').addEventListener('click',function(){var c=$('#tCcy').value,r=+$('#tRate').value;if(!c||!(r>0))return;openIssue('FX wallet: alert '+c,{action:'target',ccy:c,rate:r})});
 $('#holdTbl').addEventListener('click',function(e){var b=e.target.closest('button[data-sold]');if(!b)return;openIssue('FX wallet: sold '+b.dataset.c,b.dataset.sold?{action:'remove',id:b.dataset.sold}:{action:'remove',ccy:b.dataset.c})});
+$('#sw').addEventListener('click',function(e){var b=e.target.closest('button[data-sw]');if(!b)return;
+  openIssue('FX wallet: switch '+b.dataset.from+' to '+b.dataset.to,{action:'switch',id:b.dataset.sw,ccy:b.dataset.from,to:b.dataset.to,amount:b.dataset.get});
+  $('#hMsg').textContent='GitHub opened in a new tab. Change the amount to exactly what Wise gave you, then click "Submit new issue".';});
 $('#tList').addEventListener('click',function(e){var b=e.target.closest('button[data-untarget]');if(!b)return;openIssue('FX wallet: remove alert '+b.dataset.untarget,{action:'target',ccy:b.dataset.untarget,rate:''})});
 
-function renderAll(){renderStatus();renderBoard();renderMetals();renderDetail();renderBacktest();renderHoldings();renderWallet();renderCfg()}
-function renderAnalysis(){renderStatus();renderBoard();renderMetals();renderDetail();renderBacktest();renderHoldings();renderWallet()}
+function renderAll(){renderStatus();renderBoard();renderMetals();renderDetail();renderBacktest();renderHoldings();renderSwitches();renderWallet();renderCfg()}
+function renderAnalysis(){renderStatus();renderBoard();renderMetals();renderDetail();renderBacktest();renderHoldings();renderSwitches();renderWallet()}
 
 /* ---------- local app (live Wise) ---------- */
 function api(path){return fetch(path,{cache:'no-store'}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j})})}
