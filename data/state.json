@@ -11,8 +11,7 @@
   "SEND:LKR": 1793841131.024874
  },
  "active": {
-  "BUY:AUD": true,
-  "SEND:LKR": true
+  "BUY:AUD": true
  },
  "fails": 0,
  "summary": "2026-11-05"
