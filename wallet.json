@@ -1,4 +1,12 @@
 {
- "holdings": [],
+ "holdings": [
+  {
+   "id": "to6awb",
+   "ccy": "AUD",
+   "amount": 141.98,
+   "sgd": 125.08,
+   "date": "2026-11-08"
+  }
+ ],
  "targets": {}
 }
