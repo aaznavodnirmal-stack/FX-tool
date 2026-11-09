@@ -10,9 +10,7 @@
   "BUY:XAU": 1792910867.1909711,
   "SEND:LKR": 1793841131.024874
  },
- "active": {
-  "BUY:EUR": true
- },
+ "active": {},
  "fails": 0,
  "summary": "2026-11-09"
 }
