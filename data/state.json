@@ -8,11 +8,13 @@
   "BUY:MYR": 1792611736.5416765,
   "BUY:XPT": 1792896006.666811,
   "BUY:XAU": 1792910867.1909711,
-  "SEND:LKR": 1794316171.7853422
+  "SEND:LKR": 1794316171.7853422,
+  "BUY:GBP": 1795055592.1243234
  },
  "active": {
-  "BUY:EUR": true
+  "BUY:EUR": true,
+  "BUY:GBP": true
  },
  "fails": 0,
- "summary": "2026-11-18"
+ "summary": "2026-11-19"
 }
